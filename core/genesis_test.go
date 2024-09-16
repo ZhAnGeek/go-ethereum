@@ -22,12 +22,13 @@ import (
 	"testing"
 
 	"github.com/davecgh/go-spew/spew"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/consensus/ethash"
-	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/core/vm"
-	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/params"
+
+	"github.com/scroll-tech/go-ethereum/common"
+	"github.com/scroll-tech/go-ethereum/consensus/ethash"
+	"github.com/scroll-tech/go-ethereum/core/rawdb"
+	"github.com/scroll-tech/go-ethereum/core/vm"
+	"github.com/scroll-tech/go-ethereum/ethdb"
+	"github.com/scroll-tech/go-ethereum/params"
 )
 
 func TestInvalidCliqueConfig(t *testing.T) {
@@ -40,7 +41,7 @@ func TestInvalidCliqueConfig(t *testing.T) {
 
 func TestSetupGenesis(t *testing.T) {
 	var (
-		customghash = common.HexToHash("0x89c99d90b79719238d2645c7642f2c9295246e80775b38cfd162b696817fbd50")
+		customghash = common.HexToHash("0x700380ab70d789c462c4e8f0db082842095321f390d0a3f25f400f0746db32bc")
 		customg     = Genesis{
 			Config: &params.ChainConfig{HomesteadBlock: big.NewInt(3)},
 			Alloc: GenesisAlloc{
@@ -65,23 +66,23 @@ func TestSetupGenesis(t *testing.T) {
 			wantErr:    errGenesisNoConfig,
 			wantConfig: params.AllEthashProtocolChanges,
 		},
-		{
-			name: "no block in DB, genesis == nil",
-			fn: func(db ethdb.Database) (*params.ChainConfig, common.Hash, error) {
-				return SetupGenesisBlock(db, nil)
-			},
-			wantHash:   params.MainnetGenesisHash,
-			wantConfig: params.MainnetChainConfig,
-		},
-		{
-			name: "mainnet block in DB, genesis == nil",
-			fn: func(db ethdb.Database) (*params.ChainConfig, common.Hash, error) {
-				DefaultGenesisBlock().MustCommit(db)
-				return SetupGenesisBlock(db, nil)
-			},
-			wantHash:   params.MainnetGenesisHash,
-			wantConfig: params.MainnetChainConfig,
-		},
+		// {
+		// 	name: "no block in DB, genesis == nil",
+		// 	fn: func(db ethdb.Database) (*params.ChainConfig, common.Hash, error) {
+		// 		return SetupGenesisBlock(db, nil)
+		// 	},
+		// 	wantHash:   params.MainnetGenesisHash,
+		// 	wantConfig: params.MainnetChainConfig,
+		// },
+		// {
+		// 	name: "mainnet block in DB, genesis == nil",
+		// 	fn: func(db ethdb.Database) (*params.ChainConfig, common.Hash, error) {
+		// 		DefaultGenesisBlock().MustCommit(db)
+		// 		return SetupGenesisBlock(db, nil)
+		// 	},
+		// 	wantHash:   params.MainnetGenesisHash,
+		// 	wantConfig: params.MainnetChainConfig,
+		// },
 		{
 			name: "custom block in DB, genesis == nil",
 			fn: func(db ethdb.Database) (*params.ChainConfig, common.Hash, error) {
@@ -91,16 +92,16 @@ func TestSetupGenesis(t *testing.T) {
 			wantHash:   customghash,
 			wantConfig: customg.Config,
 		},
-		{
-			name: "custom block in DB, genesis == ropsten",
-			fn: func(db ethdb.Database) (*params.ChainConfig, common.Hash, error) {
-				customg.MustCommit(db)
-				return SetupGenesisBlock(db, DefaultRopstenGenesisBlock())
-			},
-			wantErr:    &GenesisMismatchError{Stored: customghash, New: params.RopstenGenesisHash},
-			wantHash:   params.RopstenGenesisHash,
-			wantConfig: params.RopstenChainConfig,
-		},
+		// {
+		// 	name: "custom block in DB, genesis == ropsten",
+		// 	fn: func(db ethdb.Database) (*params.ChainConfig, common.Hash, error) {
+		// 		customg.MustCommit(db)
+		// 		return SetupGenesisBlock(db, DefaultRopstenGenesisBlock())
+		// 	},
+		// 	wantErr:    &GenesisMismatchError{Stored: customghash, New: params.RopstenGenesisHash},
+		// 	wantHash:   params.RopstenGenesisHash,
+		// 	wantConfig: params.RopstenChainConfig,
+		// },
 		{
 			name: "compatible config in DB",
 			fn: func(db ethdb.Database) (*params.ChainConfig, common.Hash, error) {
@@ -167,11 +168,14 @@ func TestGenesisHashes(t *testing.T) {
 		genesis *Genesis
 		want    common.Hash
 	}{
-		{DefaultGenesisBlock(), params.MainnetGenesisHash},
-		{DefaultGoerliGenesisBlock(), params.GoerliGenesisHash},
-		{DefaultRopstenGenesisBlock(), params.RopstenGenesisHash},
-		{DefaultRinkebyGenesisBlock(), params.RinkebyGenesisHash},
-		{DefaultSepoliaGenesisBlock(), params.SepoliaGenesisHash},
+		// {DefaultGenesisBlock(), params.MainnetGenesisHash},
+		// {DefaultGoerliGenesisBlock(), params.GoerliGenesisHash},
+		// {DefaultRopstenGenesisBlock(), params.RopstenGenesisHash},
+		// {DefaultRinkebyGenesisBlock(), params.RinkebyGenesisHash},
+		// {DefaultSepoliaGenesisBlock(), params.SepoliaGenesisHash},
+		// {DefaultScrollAlphaGenesisBlock(), params.ScrollAlphaGenesisHash},
+		{DefaultScrollSepoliaGenesisBlock(), params.ScrollSepoliaGenesisHash},
+		{DefaultScrollMainnetGenesisBlock(), params.ScrollMainnetGenesisHash},
 	} {
 		// Test via MustCommit
 		if have := c.genesis.MustCommit(rawdb.NewMemoryDatabase()).Hash(); have != c.want {

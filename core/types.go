@@ -17,9 +17,9 @@
 package core
 
 import (
-	"github.com/ethereum/go-ethereum/core/state"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/scroll-tech/go-ethereum/core/state"
+	"github.com/scroll-tech/go-ethereum/core/types"
+	"github.com/scroll-tech/go-ethereum/core/vm"
 )
 
 // Validator is an interface which defines the standard for block validation. It
@@ -32,6 +32,9 @@ type Validator interface {
 	// ValidateState validates the given statedb and optionally the receipts and
 	// gas used.
 	ValidateState(block *types.Block, state *state.StateDB, receipts types.Receipts, usedGas uint64) error
+
+	// WithAsyncValidator sets up an async validator to be triggered on each new block
+	WithAsyncValidator(asyncValidator func(*types.Block) error) Validator
 }
 
 // Prefetcher is an interface for pre-caching transaction signatures and state.

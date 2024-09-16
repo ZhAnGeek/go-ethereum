@@ -21,8 +21,8 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/scroll-tech/go-ethereum/core/types"
+	"github.com/scroll-tech/go-ethereum/crypto"
 )
 
 // Tests that transactions can be added to strict lists and list contents and
@@ -38,7 +38,7 @@ func TestStrictTxListAdd(t *testing.T) {
 	// Insert the transactions in a random order
 	list := newTxList(true)
 	for _, v := range rand.Perm(len(txs)) {
-		list.Add(txs[v], DefaultTxPoolConfig.PriceBump)
+		list.Add(txs[v], nil, DefaultTxPoolConfig.PriceBump, nil, nil)
 	}
 	// Verify internal state
 	if len(list.txs.items) != len(txs) {
@@ -65,7 +65,7 @@ func BenchmarkTxListAdd(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		list := newTxList(true)
 		for _, v := range rand.Perm(len(txs)) {
-			list.Add(txs[v], DefaultTxPoolConfig.PriceBump)
+			list.Add(txs[v], nil, DefaultTxPoolConfig.PriceBump, nil, nil)
 			list.Filter(priceLimit, DefaultTxPoolConfig.PriceBump)
 		}
 	}

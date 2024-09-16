@@ -23,11 +23,24 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/ethdb/memorydb"
+	"github.com/scroll-tech/go-ethereum/common"
+	"github.com/scroll-tech/go-ethereum/crypto"
+	"github.com/scroll-tech/go-ethereum/ethdb"
+	"github.com/scroll-tech/go-ethereum/ethdb/memorydb"
 )
+
+func TestEmptyIterator(t *testing.T) {
+	trie := newEmpty()
+	iter := trie.NodeIterator(nil)
+
+	seen := make(map[string]struct{})
+	for iter.Next(true) {
+		seen[string(iter.Path())] = struct{}{}
+	}
+	if len(seen) != 0 {
+		t.Fatal("Unexpected trie node iterated")
+	}
+}
 
 func TestIterator(t *testing.T) {
 	trie := newEmpty()

@@ -26,18 +26,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/consensus/ethash"
-	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/eth"
-	"github.com/ethereum/go-ethereum/eth/ethconfig"
-	"github.com/ethereum/go-ethereum/node"
-	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/rpc"
+	"github.com/scroll-tech/go-ethereum"
+	"github.com/scroll-tech/go-ethereum/common"
+	"github.com/scroll-tech/go-ethereum/consensus/ethash"
+	"github.com/scroll-tech/go-ethereum/core"
+	"github.com/scroll-tech/go-ethereum/core/rawdb"
+	"github.com/scroll-tech/go-ethereum/core/types"
+	"github.com/scroll-tech/go-ethereum/crypto"
+	"github.com/scroll-tech/go-ethereum/eth"
+	"github.com/scroll-tech/go-ethereum/eth/ethconfig"
+	"github.com/scroll-tech/go-ethereum/node"
+	"github.com/scroll-tech/go-ethereum/params"
+	"github.com/scroll-tech/go-ethereum/rollup/rcfg"
+	"github.com/scroll-tech/go-ethereum/rpc"
 )
 
 // Verify that Client implements the ethereum interfaces.
@@ -182,14 +183,30 @@ func TestToFilterArg(t *testing.T) {
 }
 
 var (
-	testKey, _  = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
-	testAddr    = crypto.PubkeyToAddress(testKey.PublicKey)
-	testBalance = big.NewInt(2e15)
+	testKey, _         = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
+	testAddr           = crypto.PubkeyToAddress(testKey.PublicKey)
+	emptyAccountKey, _ = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f292")
+	emptyAddr          = crypto.PubkeyToAddress(emptyAccountKey.PublicKey)
+	testBalance        = big.NewInt(2e15)
 )
 
 var genesis = &core.Genesis{
-	Config:    params.AllEthashProtocolChanges,
-	Alloc:     core.GenesisAlloc{testAddr: {Balance: testBalance}},
+	Config: params.AllEthashProtocolChanges,
+	Alloc: core.GenesisAlloc{
+		testAddr: {Balance: testBalance},
+		rcfg.L1GasPriceOracleAddress: {
+			Balance: big.NewInt(0),
+			Storage: map[common.Hash]common.Hash{
+				rcfg.L1BaseFeeSlot:     common.BigToHash(big.NewInt(10000)),
+				rcfg.OverheadSlot:      common.BigToHash(big.NewInt(10000)),
+				rcfg.ScalarSlot:        common.BigToHash(big.NewInt(10000)),
+				rcfg.L1BlobBaseFeeSlot: common.BigToHash(big.NewInt(10000)),
+				rcfg.CommitScalarSlot:  common.BigToHash(big.NewInt(10000)),
+				rcfg.BlobScalarSlot:    common.BigToHash(big.NewInt(10000)),
+				rcfg.IsCurieSlot:       common.BytesToHash([]byte{1}),
+			},
+		},
+	},
 	ExtraData: []byte("test genesis"),
 	Timestamp: 9000,
 	BaseFee:   big.NewInt(params.InitialBaseFee),
@@ -223,7 +240,7 @@ func newTestBackend(t *testing.T) (*node.Node, []*types.Block) {
 	// Create Ethereum Service
 	config := &ethconfig.Config{Genesis: genesis}
 	config.Ethash.PowMode = ethash.ModeFake
-	ethservice, err := eth.New(n, config)
+	ethservice, err := eth.New(n, config, nil)
 	if err != nil {
 		t.Fatalf("can't create new ethereum service: %v", err)
 	}
@@ -284,6 +301,9 @@ func TestEthClient(t *testing.T) {
 		},
 		"CallContract": {
 			func(t *testing.T) { testCallContract(t, client) },
+		},
+		"EstimateGas": {
+			func(t *testing.T) { testEstimateGas(t, client) },
 		},
 		"AtFunctions": {
 			func(t *testing.T) { testAtFunctions(t, client) },
@@ -530,6 +550,22 @@ func testCallContract(t *testing.T, client *rpc.Client) {
 	}
 	// PendingCallCOntract
 	if _, err := ec.PendingCallContract(context.Background(), msg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func testEstimateGas(t *testing.T, client *rpc.Client) {
+	ec := NewClient(client)
+
+	// EstimateGas
+	msg := ethereum.CallMsg{
+		From:     emptyAddr,
+		To:       &common.Address{},
+		GasPrice: big.NewInt(1000000000),
+	}
+	_, err := ec.EstimateGas(context.Background(), msg)
+
+	if err == nil || err.Error() != "insufficient funds for l1 fee" {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

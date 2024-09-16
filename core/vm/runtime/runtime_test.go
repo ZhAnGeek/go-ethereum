@@ -24,20 +24,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ethereum/go-ethereum/accounts/abi"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/consensus"
-	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/asm"
-	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/core/state"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/core/vm"
-	"github.com/ethereum/go-ethereum/eth/tracers"
-	"github.com/ethereum/go-ethereum/params"
+	"github.com/scroll-tech/go-ethereum/accounts/abi"
+	"github.com/scroll-tech/go-ethereum/common"
+	"github.com/scroll-tech/go-ethereum/consensus"
+	"github.com/scroll-tech/go-ethereum/core"
+	"github.com/scroll-tech/go-ethereum/core/asm"
+	"github.com/scroll-tech/go-ethereum/core/rawdb"
+	"github.com/scroll-tech/go-ethereum/core/state"
+	"github.com/scroll-tech/go-ethereum/core/types"
+	"github.com/scroll-tech/go-ethereum/core/vm"
+	"github.com/scroll-tech/go-ethereum/eth/tracers"
+	"github.com/scroll-tech/go-ethereum/params"
 
 	// force-load js tracers to trigger registration
-	_ "github.com/ethereum/go-ethereum/eth/tracers/js"
+	_ "github.com/scroll-tech/go-ethereum/eth/tracers/js"
 )
 
 func TestDefaults(t *testing.T) {
@@ -84,6 +84,26 @@ func TestEVM(t *testing.T) {
 		byte(vm.BLOCKHASH),
 		byte(vm.COINBASE),
 	}, nil, nil)
+}
+
+func TestDifficulty(t *testing.T) {
+	ret, _, err := Execute([]byte{
+		byte(vm.DIFFICULTY),
+		byte(vm.PUSH1), 0,
+		byte(vm.MSTORE),
+		byte(vm.PUSH1), 32,
+		byte(vm.PUSH1), 0,
+		byte(vm.RETURN),
+	}, nil, &Config{Difficulty: big.NewInt(1)})
+
+	if err != nil {
+		t.Fatal("didn't expect error", err)
+	}
+
+	num := new(big.Int).SetBytes(ret)
+	if num.Cmp(big.NewInt(0)) != 0 {
+		t.Error("Expected 0, got", num)
+	}
 }
 
 func TestExecute(t *testing.T) {
@@ -314,13 +334,17 @@ func TestBlockhash(t *testing.T) {
 	if zero.BitLen() != 0 {
 		t.Fatalf("expected zeroes, got %x", ret[0:32])
 	}
-	if first.Uint64() != 999 {
-		t.Fatalf("second block should be 999, got %d (%x)", first, ret[32:64])
+	firstExpectedHash := new(big.Int)
+	firstExpectedHash.SetString("13215081625009140218242111988507489764601005198286886925088730931502473149599", 10)
+	if first.Uint64() != firstExpectedHash.Uint64() {
+		t.Fatalf("first hash should be 13215081625009140218242111988507489764601005198286886925088730931502473149599, got %d (%x)", first, ret[32:64])
 	}
-	if last.Uint64() != 744 {
-		t.Fatalf("last block should be 744, got %d (%x)", last, ret[64:96])
+	lastExpectedHash := new(big.Int)
+	lastExpectedHash.SetString("2851160567348483005169712516804956111111231427377973738952179767509712807467", 10)
+	if last.Uint64() != lastExpectedHash.Uint64() {
+		t.Fatalf("last hash should be 2851160567348483005169712516804956111111231427377973738952179767509712807467, got %d (%x)", last, ret[64:96])
 	}
-	if exp, got := 255, chain.counter; exp != got {
+	if exp, got := 0, chain.counter; exp != got {
 		t.Errorf("suboptimal; too much chain iteration, expected %d, got %d", exp, got)
 	}
 }
@@ -625,7 +649,7 @@ func TestEip2929Cases(t *testing.T) {
 
 // TestColdAccountAccessCost test that the cold account access cost is reported
 // correctly
-// see: https://github.com/ethereum/go-ethereum/issues/22649
+// see: https://github.com/scroll-tech/go-ethereum/issues/22649
 func TestColdAccountAccessCost(t *testing.T) {
 	for i, tc := range []struct {
 		code []byte

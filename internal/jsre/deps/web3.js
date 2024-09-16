@@ -3790,6 +3790,9 @@ var outputTransactionFormatter = function (tx){
       tx.maxPriorityFeePerGas = utils.toBigNumber(tx.maxPriorityFeePerGas);
     }
     tx.value = utils.toBigNumber(tx.value);
+    if(tx.queueIndex !== undefined) {
+        tx.queueIndex = utils.toBigNumber(tx.queueIndex);
+    }
     return tx;
 };
 
@@ -5872,7 +5875,7 @@ module.exports = Shh;
  * @author Alex Beregszaszi <alex@rtfs.hu>
  * @date 2016
  *
- * Reference: https://github.com/ethereum/go-ethereum/blob/swarm/internal/web3ext/web3ext.go#L33
+ * Reference: https://github.com/scroll-tech/go-ethereum/blob/swarm/internal/web3ext/web3ext.go#L33
  */
 
 "use strict";

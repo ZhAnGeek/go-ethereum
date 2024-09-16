@@ -18,12 +18,21 @@ package core
 
 import (
 	"fmt"
+	"time"
 
-	"github.com/ethereum/go-ethereum/consensus"
-	"github.com/ethereum/go-ethereum/core/state"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/trie"
+	"github.com/scroll-tech/go-ethereum/consensus"
+	"github.com/scroll-tech/go-ethereum/core/rawdb"
+	"github.com/scroll-tech/go-ethereum/core/state"
+	"github.com/scroll-tech/go-ethereum/core/types"
+	"github.com/scroll-tech/go-ethereum/log"
+	"github.com/scroll-tech/go-ethereum/metrics"
+	"github.com/scroll-tech/go-ethereum/params"
+	"github.com/scroll-tech/go-ethereum/trie"
+)
+
+var (
+	validateL1MessagesTimer = metrics.NewRegisteredTimer("validator/l1msg", nil)
+	asyncValidatorTimer     = metrics.NewRegisteredTimer("validator/async", nil)
 )
 
 // BlockValidator is responsible for validating block headers, uncles and
@@ -31,9 +40,10 @@ import (
 //
 // BlockValidator implements Validator.
 type BlockValidator struct {
-	config *params.ChainConfig // Chain configuration options
-	bc     *BlockChain         // Canonical block chain
-	engine consensus.Engine    // Consensus engine used for validating
+	config         *params.ChainConfig      // Chain configuration options
+	bc             *BlockChain              // Canonical block chain
+	engine         consensus.Engine         // Consensus engine used for validating
+	asyncValidator func(*types.Block) error // Asynchronously run a validation task
 }
 
 // NewBlockValidator returns a new block validator which is safe for re-use
@@ -46,6 +56,12 @@ func NewBlockValidator(config *params.ChainConfig, blockchain *BlockChain, engin
 	return validator
 }
 
+// WithAsyncValidator sets up an async validator to be triggered on each new block
+func (v *BlockValidator) WithAsyncValidator(asyncValidator func(*types.Block) error) Validator {
+	v.asyncValidator = asyncValidator
+	return v
+}
+
 // ValidateBody validates the given block's uncles and verifies the block
 // header's transaction and uncle roots. The headers are assumed to be already
 // validated at this point.
@@ -53,6 +69,13 @@ func (v *BlockValidator) ValidateBody(block *types.Block) error {
 	// Check whether the block's known, and if not, that it's linkable
 	if v.bc.HasBlockAndState(block.Hash(), block.NumberU64()) {
 		return ErrKnownBlock
+	}
+	if !v.config.Scroll.IsValidTxCount(len(block.Transactions())) {
+		return consensus.ErrInvalidTxCount
+	}
+	// Check if block payload size is smaller than the max size
+	if !v.config.Scroll.IsValidBlockSize(block.PayloadSize()) {
+		return ErrInvalidBlockPayloadSize
 	}
 	// Header validity is known at this point, check the uncles and transactions
 	header := block.Header()
@@ -71,6 +94,113 @@ func (v *BlockValidator) ValidateBody(block *types.Block) error {
 		}
 		return consensus.ErrPrunedAncestor
 	}
+	if err := v.ValidateL1Messages(block); err != nil {
+		return err
+	}
+
+	if v.asyncValidator != nil {
+		asyncStart := time.Now()
+		if err := v.asyncValidator(block); err != nil {
+			return err
+		}
+		asyncValidatorTimer.UpdateSince(asyncStart)
+	}
+	return nil
+}
+
+// ValidateL1Messages validates L1 messages contained in a block.
+// We check the following conditions:
+// - L1 messages are in a contiguous section at the front of the block.
+// - The first L1 message's QueueIndex is right after the last L1 message included in the chain.
+// - L1 messages follow the QueueIndex order.
+// - The L1 messages included in the block match the node's view of the L1 ledger.
+func (v *BlockValidator) ValidateL1Messages(block *types.Block) error {
+	defer func(t0 time.Time) {
+		validateL1MessagesTimer.Update(time.Since(t0))
+	}(time.Now())
+
+	// skip DB read if the block contains no L1 messages
+	if !block.ContainsL1Messages() {
+		return nil
+	}
+
+	blockHash := block.Hash()
+
+	if v.config.Scroll.L1Config == nil {
+		// TODO: should we allow follower nodes to skip L1 message verification?
+		panic("Running on L1Message-enabled network but no l1Config was provided")
+	}
+
+	nextQueueIndex := rawdb.ReadFirstQueueIndexNotInL2Block(v.bc.db, block.ParentHash())
+	if nextQueueIndex == nil {
+		// we'll reprocess this block at a later time
+		return consensus.ErrMissingL1MessageData
+	}
+	queueIndex := *nextQueueIndex
+
+	L1SectionOver := false
+	it := rawdb.IterateL1MessagesFrom(v.bc.db, queueIndex)
+
+	for _, tx := range block.Transactions() {
+		if !tx.IsL1MessageTx() {
+			L1SectionOver = true
+			continue // we do not verify L2 transactions here
+		}
+
+		// check that L1 messages are before L2 transactions
+		if L1SectionOver {
+			return consensus.ErrInvalidL1MessageOrder
+		}
+
+		// queue index cannot decrease
+		txQueueIndex := tx.AsL1MessageTx().QueueIndex
+
+		if txQueueIndex < queueIndex {
+			return consensus.ErrInvalidL1MessageOrder
+		}
+
+		// skipped messages
+		// TODO: consider verifying that skipped messages overflow
+		for index := queueIndex; index < txQueueIndex; index++ {
+			if exists := it.Next(); !exists {
+				if err := it.Error(); err != nil {
+					log.Error("Unexpected DB error in ValidateL1Messages", "err", err, "queueIndex", queueIndex)
+				}
+				// the message in this block is not available in our local db.
+				// we'll reprocess this block at a later time.
+				return consensus.ErrMissingL1MessageData
+			}
+
+			l1msg := it.L1Message()
+			skippedTx := types.NewTx(&l1msg)
+			log.Debug("Skipped L1 message", "queueIndex", index, "tx", skippedTx.Hash().String(), "block", blockHash.String())
+			rawdb.WriteSkippedTransaction(v.bc.db, skippedTx, nil, "unknown", block.NumberU64(), &blockHash)
+		}
+
+		queueIndex = txQueueIndex + 1
+
+		if exists := it.Next(); !exists {
+			if err := it.Error(); err != nil {
+				log.Error("Unexpected DB error in ValidateL1Messages", "err", err, "queueIndex", txQueueIndex)
+			}
+			// the message in this block is not available in our local db.
+			// we'll reprocess this block at a later time.
+			return consensus.ErrMissingL1MessageData
+		}
+
+		// check that the L1 message in the block is the same that we collected from L1
+		msg := it.L1Message()
+		expectedHash := types.NewTx(&msg).Hash()
+
+		if tx.Hash() != expectedHash {
+			return consensus.ErrUnknownL1Message
+		}
+	}
+
+	// TODO: consider adding a rule to enforce L1Config.NumL1MessagesPerBlock.
+	// If there are L1 messages available, sequencer nodes should include them.
+	// However, this is hard to enforce as different nodes might have different views of L1.
+
 	return nil
 }
 

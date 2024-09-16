@@ -25,14 +25,15 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/ethereum/go-ethereum/accounts/abi"
-	"github.com/ethereum/go-ethereum/accounts/abi/bind"
-	"github.com/ethereum/go-ethereum/cmd/utils"
-	"github.com/ethereum/go-ethereum/common/compiler"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/internal/flags"
-	"github.com/ethereum/go-ethereum/log"
 	"gopkg.in/urfave/cli.v1"
+
+	"github.com/scroll-tech/go-ethereum/accounts/abi"
+	"github.com/scroll-tech/go-ethereum/accounts/abi/bind"
+	"github.com/scroll-tech/go-ethereum/cmd/utils"
+	"github.com/scroll-tech/go-ethereum/common/compiler"
+	"github.com/scroll-tech/go-ethereum/crypto"
+	"github.com/scroll-tech/go-ethereum/internal/flags"
+	"github.com/scroll-tech/go-ethereum/log"
 )
 
 var (
@@ -98,6 +99,14 @@ var (
 		Name:  "alias",
 		Usage: "Comma separated aliases for function and event renaming, e.g. original1=alias1, original2=alias2",
 	}
+	contractFlag = cli.StringFlag{
+		Name:  "contract",
+		Usage: "Name of the contract to generate the bindings for",
+	}
+	tmplFlag = cli.StringFlag{
+		Name:  "tmpl",
+		Usage: "Template file if a user wants to customize",
+	}
 )
 
 func init() {
@@ -116,6 +125,8 @@ func init() {
 		outFlag,
 		langFlag,
 		aliasFlag,
+		contractFlag,
+		tmplFlag,
 	}
 	app.Action = utils.MigrateFlags(abigen)
 	cli.CommandHelpTemplate = flags.OriginCommandHelpTemplate
@@ -224,6 +235,13 @@ func abigen(c *cli.Context) error {
 		}
 		// Gather all non-excluded contract for binding
 		for name, contract := range contracts {
+			// The fully qualified name is of the form <solFilePath>:<type>
+			nameParts := strings.Split(name, ":")
+			typeName := nameParts[len(nameParts)-1]
+			// If a contract name is provided then ignore all other contracts
+			if c.GlobalIsSet(contractFlag.Name) && c.GlobalString(contractFlag.Name) != typeName {
+				continue
+			}
 			if exclude[strings.ToLower(name)] {
 				continue
 			}
@@ -234,11 +252,10 @@ func abigen(c *cli.Context) error {
 			abis = append(abis, string(abi))
 			bins = append(bins, contract.Code)
 			sigs = append(sigs, contract.Hashes)
-			nameParts := strings.Split(name, ":")
-			types = append(types, nameParts[len(nameParts)-1])
+			types = append(types, typeName)
 
 			libPattern := crypto.Keccak256Hash([]byte(name)).String()[2:36]
-			libs[libPattern] = nameParts[len(nameParts)-1]
+			libs[libPattern] = typeName
 		}
 	}
 	// Extract all aliases from the flags
@@ -252,6 +269,15 @@ func abigen(c *cli.Context) error {
 		for _, match := range submatches {
 			aliases[match[1]] = match[2]
 		}
+	}
+	// Set customize template file.
+	if c.GlobalIsSet(tmplFlag.Name) {
+		tmplFile := c.GlobalString(tmplFlag.Name)
+		data, err := os.ReadFile(tmplFile)
+		if err != nil {
+			utils.Fatalf("Failed to read template file: %v", err)
+		}
+		bind.SetTmplSource(lang, string(data))
 	}
 	// Generate the contract binding
 	code, err := bind.Bind(types, abis, bins, sigs, c.GlobalString(pkgFlag.Name), lang, libs, aliases)

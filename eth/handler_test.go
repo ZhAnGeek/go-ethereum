@@ -20,18 +20,21 @@ import (
 	"math/big"
 	"sort"
 	"sync"
+	"testing"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/consensus/ethash"
-	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/core/vm"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/eth/downloader"
-	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/event"
-	"github.com/ethereum/go-ethereum/params"
+	"github.com/stretchr/testify/require"
+
+	"github.com/scroll-tech/go-ethereum/common"
+	"github.com/scroll-tech/go-ethereum/consensus/ethash"
+	"github.com/scroll-tech/go-ethereum/core"
+	"github.com/scroll-tech/go-ethereum/core/rawdb"
+	"github.com/scroll-tech/go-ethereum/core/types"
+	"github.com/scroll-tech/go-ethereum/core/vm"
+	"github.com/scroll-tech/go-ethereum/crypto"
+	"github.com/scroll-tech/go-ethereum/eth/downloader"
+	"github.com/scroll-tech/go-ethereum/ethdb"
+	"github.com/scroll-tech/go-ethereum/event"
+	"github.com/scroll-tech/go-ethereum/params"
 )
 
 var (
@@ -167,4 +170,83 @@ func newTestHandlerWithBlocks(blocks int) *testHandler {
 func (b *testHandler) close() {
 	b.handler.Stop()
 	b.chain.Stop()
+}
+
+type testPeer struct {
+	id string
+}
+
+func (p testPeer) ID() string {
+	return p.id
+}
+
+func TestOnlyShadowForkPeers(t *testing.T) {
+
+	tests := map[string]struct {
+		shadowForkPeerIDs []string
+		peers             []testPeer
+		expectedPeerIDs   []string
+	}{
+		"nil peers": {
+			shadowForkPeerIDs: nil,
+			peers:             nil,
+			expectedPeerIDs:   []string{},
+		},
+		"empty peers": {
+			shadowForkPeerIDs: nil,
+			peers:             []testPeer{},
+			expectedPeerIDs:   []string{},
+		},
+		"no fork": {
+			shadowForkPeerIDs: nil,
+			peers: []testPeer{
+				{
+					id: "peer1",
+				},
+				{
+					id: "peer2",
+				},
+			},
+			expectedPeerIDs: []string{
+				"peer1",
+				"peer2",
+			},
+		},
+		"some shadow fork peers": {
+			shadowForkPeerIDs: []string{"peer2"},
+			peers: []testPeer{
+				{
+					id: "peer1",
+				},
+				{
+					id: "peer2",
+				},
+			},
+			expectedPeerIDs: []string{
+				"peer2",
+			},
+		},
+		"no shadow fork peers": {
+			shadowForkPeerIDs: []string{"peer2"},
+			peers: []testPeer{
+				{
+					id: "peer1",
+				},
+				{
+					id: "peer3",
+				},
+			},
+			expectedPeerIDs: []string{},
+		},
+	}
+
+	for desc, test := range tests {
+		t.Run(desc, func(t *testing.T) {
+			gotIds := []string{}
+			for _, peer := range onlyShadowForkPeers(test.shadowForkPeerIDs, test.peers) {
+				gotIds = append(gotIds, peer.ID())
+			}
+			require.Equal(t, gotIds, test.expectedPeerIDs)
+		})
+	}
 }

@@ -24,12 +24,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/accounts/abi"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/event"
+	"github.com/scroll-tech/go-ethereum"
+	"github.com/scroll-tech/go-ethereum/accounts/abi"
+	"github.com/scroll-tech/go-ethereum/common"
+	"github.com/scroll-tech/go-ethereum/core/types"
+	"github.com/scroll-tech/go-ethereum/crypto"
+	"github.com/scroll-tech/go-ethereum/event"
 )
 
 // SignerFn is a signer function callback when a contract requires a method to
@@ -249,10 +249,14 @@ func (c *BoundContract) createDynamicTx(opts *TransactOpts, contract *common.Add
 	// Estimate FeeCap
 	gasFeeCap := opts.GasFeeCap
 	if gasFeeCap == nil {
-		gasFeeCap = new(big.Int).Add(
-			gasTipCap,
-			new(big.Int).Mul(head.BaseFee, big.NewInt(2)),
-		)
+		if head.BaseFee != nil {
+			gasFeeCap = new(big.Int).Add(
+				gasTipCap,
+				new(big.Int).Mul(head.BaseFee, big.NewInt(2)),
+			)
+		} else {
+			gasFeeCap = new(big.Int).Set(gasTipCap)
+		}
 	}
 	if gasFeeCap.Cmp(gasTipCap) < 0 {
 		return nil, fmt.Errorf("maxFeePerGas (%v) < maxPriorityFeePerGas (%v)", gasFeeCap, gasTipCap)
@@ -285,7 +289,7 @@ func (c *BoundContract) createDynamicTx(opts *TransactOpts, contract *common.Add
 
 func (c *BoundContract) createLegacyTx(opts *TransactOpts, contract *common.Address, input []byte) (*types.Transaction, error) {
 	if opts.GasFeeCap != nil || opts.GasTipCap != nil {
-		return nil, errors.New("maxFeePerGas or maxPriorityFeePerGas specified but london is not active yet")
+		return nil, errors.New("maxFeePerGas or maxPriorityFeePerGas specified but curie is not active yet")
 	}
 	// Normalize value
 	value := opts.Value

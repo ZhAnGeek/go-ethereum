@@ -23,25 +23,27 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"math/big"
 	"os"
 	"runtime"
 	"sync"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/consensus"
-	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/core/state"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/core/vm"
-	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/internal/ethapi"
-	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/ethereum/go-ethereum/rpc"
+	"github.com/scroll-tech/go-ethereum/common"
+	"github.com/scroll-tech/go-ethereum/common/hexutil"
+	"github.com/scroll-tech/go-ethereum/consensus"
+	"github.com/scroll-tech/go-ethereum/core"
+	"github.com/scroll-tech/go-ethereum/core/rawdb"
+	"github.com/scroll-tech/go-ethereum/core/state"
+	"github.com/scroll-tech/go-ethereum/core/types"
+	"github.com/scroll-tech/go-ethereum/core/vm"
+	"github.com/scroll-tech/go-ethereum/ethdb"
+	"github.com/scroll-tech/go-ethereum/internal/ethapi"
+	"github.com/scroll-tech/go-ethereum/log"
+	"github.com/scroll-tech/go-ethereum/params"
+	"github.com/scroll-tech/go-ethereum/rlp"
+	"github.com/scroll-tech/go-ethereum/rollup/fees"
+	"github.com/scroll-tech/go-ethereum/rpc"
 )
 
 const (
@@ -72,6 +74,7 @@ type Backend interface {
 	GetTransaction(ctx context.Context, txHash common.Hash) (*types.Transaction, common.Hash, uint64, uint64, error)
 	RPCGasCap() uint64
 	ChainConfig() *params.ChainConfig
+	CacheConfig() *core.CacheConfig
 	Engine() consensus.Engine
 	ChainDb() ethdb.Database
 	// StateAtBlock returns the state corresponding to the stateroot of the block.
@@ -83,12 +86,13 @@ type Backend interface {
 
 // API is the collection of tracing APIs exposed over the private debugging endpoint.
 type API struct {
-	backend Backend
+	backend             Backend
+	scrollTracerWrapper scrollTracerWrapper
 }
 
 // NewAPI creates a new API definition for the tracing methods of the Ethereum service.
-func NewAPI(backend Backend) *API {
-	return &API{backend: backend}
+func NewAPI(backend Backend, scrollTracerWrapper scrollTracerWrapper) *API {
+	return &API{backend: backend, scrollTracerWrapper: scrollTracerWrapper}
 }
 
 type chainContext struct {
@@ -190,6 +194,7 @@ type StdTraceConfig struct {
 
 // txTraceResult is the result of a single transaction trace.
 type txTraceResult struct {
+	TxHash common.Hash `json:"txHash"`           // Hash of the transaction being traced
 	Result interface{} `json:"result,omitempty"` // Trace results produced by the tracer
 	Error  string      `json:"error,omitempty"`  // Trace failure produced by the tracer
 }
@@ -271,16 +276,26 @@ func (api *API) traceChain(ctx context.Context, start, end *types.Block, config 
 			// Fetch and execute the next block trace tasks
 			for task := range tasks {
 				signer := types.MakeSigner(api.backend.ChainConfig(), task.block.Number())
-				blockCtx := core.NewEVMBlockContext(task.block.Header(), api.chainContext(localctx), nil)
+				blockCtx := core.NewEVMBlockContext(task.block.Header(), api.chainContext(localctx), api.backend.ChainConfig(), nil)
 				// Trace all the transactions contained within
 				for i, tx := range task.block.Transactions() {
 					msg, _ := tx.AsMessage(signer, task.block.BaseFee())
 					txctx := &Context{
-						BlockHash: task.block.Hash(),
-						TxIndex:   i,
-						TxHash:    tx.Hash(),
+						BlockNumber: task.block.NumberU64(),
+						BlockHash:   task.block.Hash(),
+						TxIndex:     i,
+						TxHash:      tx.Hash(),
 					}
-					res, err := api.traceTx(localctx, msg, txctx, blockCtx, task.statedb, config)
+
+					l1DataFee, err := fees.CalculateL1DataFee(tx, task.statedb, api.backend.ChainConfig(), task.block.Number())
+					if err != nil {
+						// though it's not a "tracing error", we still need to put it here
+						task.results[i] = &txTraceResult{Error: err.Error()}
+						log.Warn("CalculateL1DataFee failed", "hash", tx.Hash(), "block", task.block.NumberU64(), "err", err)
+						break
+					}
+
+					res, err := api.traceTx(localctx, msg, txctx, blockCtx, task.statedb, config, l1DataFee)
 					if err != nil {
 						task.results[i] = &txTraceResult{Error: err.Error()}
 						log.Warn("Tracing failed", "hash", tx.Hash(), "block", task.block.NumberU64(), "err", err)
@@ -521,7 +536,7 @@ func (api *API) IntermediateRoots(ctx context.Context, hash common.Hash, config 
 		roots              []common.Hash
 		signer             = types.MakeSigner(api.backend.ChainConfig(), block.Number())
 		chainConfig        = api.backend.ChainConfig()
-		vmctx              = core.NewEVMBlockContext(block.Header(), api.chainContext(ctx), nil)
+		vmctx              = core.NewEVMBlockContext(block.Header(), api.chainContext(ctx), api.backend.ChainConfig(), nil)
 		deleteEmptyObjects = chainConfig.IsEIP158(block.Number())
 	)
 	for i, tx := range block.Transactions() {
@@ -530,8 +545,15 @@ func (api *API) IntermediateRoots(ctx context.Context, hash common.Hash, config 
 			txContext = core.NewEVMTxContext(msg)
 			vmenv     = vm.NewEVM(vmctx, txContext, statedb, chainConfig, vm.Config{})
 		)
-		statedb.Prepare(tx.Hash(), i)
-		if _, err := core.ApplyMessage(vmenv, msg, new(core.GasPool).AddGas(msg.Gas())); err != nil {
+		statedb.SetTxContext(tx.Hash(), i)
+
+		l1DataFee, err := fees.CalculateL1DataFee(tx, statedb, api.backend.ChainConfig(), block.Number())
+		if err != nil {
+			log.Warn("Tracing intermediate roots did not complete due to fees.CalculateL1DataFee", "txindex", i, "txhash", tx.Hash(), "err", err)
+			return nil, err
+		}
+
+		if _, err = core.ApplyMessage(vmenv, msg, new(core.GasPool).AddGas(msg.Gas()), l1DataFee); err != nil {
 			log.Warn("Tracing intermediate roots did not complete", "txindex", i, "txhash", tx.Hash(), "err", err)
 			// We intentionally don't return the error here: if we do, then the RPC server will not
 			// return the roots. Most likely, the caller already knows that a certain transaction fails to
@@ -591,8 +613,9 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 	if threads > len(txs) {
 		threads = len(txs)
 	}
-	blockCtx := core.NewEVMBlockContext(block.Header(), api.chainContext(ctx), nil)
+	blockCtx := core.NewEVMBlockContext(block.Header(), api.chainContext(ctx), api.backend.ChainConfig(), nil)
 	blockHash := block.Hash()
+	blockNumber := block.NumberU64()
 	for th := 0; th < threads; th++ {
 		pend.Add(1)
 		go func() {
@@ -601,16 +624,33 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 			for task := range jobs {
 				msg, _ := txs[task.index].AsMessage(signer, block.BaseFee())
 				txctx := &Context{
-					BlockHash: blockHash,
-					TxIndex:   task.index,
-					TxHash:    txs[task.index].Hash(),
+					BlockNumber: blockNumber,
+					BlockHash:   blockHash,
+					TxIndex:     task.index,
+					TxHash:      txs[task.index].Hash(),
 				}
-				res, err := api.traceTx(ctx, msg, txctx, blockCtx, task.statedb, config)
+
+				l1DataFee, err := fees.CalculateL1DataFee(txs[task.index], task.statedb, api.backend.ChainConfig(), block.Number())
 				if err != nil {
-					results[task.index] = &txTraceResult{Error: err.Error()}
+					// though it's not a "tracing error", we still need to put it here
+					results[task.index] = &txTraceResult{
+						TxHash: txs[task.index].Hash(),
+						Error:  err.Error(),
+					}
 					continue
 				}
-				results[task.index] = &txTraceResult{Result: res}
+				res, err := api.traceTx(ctx, msg, txctx, blockCtx, task.statedb, config, l1DataFee)
+				if err != nil {
+					results[task.index] = &txTraceResult{
+						TxHash: txs[task.index].Hash(),
+						Error:  err.Error(),
+					}
+					continue
+				}
+				results[task.index] = &txTraceResult{
+					TxHash: txs[task.index].Hash(),
+					Result: res,
+				}
 			}
 		}()
 	}
@@ -622,9 +662,14 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 
 		// Generate the next state snapshot fast without tracing
 		msg, _ := tx.AsMessage(signer, block.BaseFee())
-		statedb.Prepare(tx.Hash(), i)
+		statedb.SetTxContext(tx.Hash(), i)
 		vmenv := vm.NewEVM(blockCtx, core.NewEVMTxContext(msg), statedb, api.backend.ChainConfig(), vm.Config{})
-		if _, err := core.ApplyMessage(vmenv, msg, new(core.GasPool).AddGas(msg.Gas())); err != nil {
+		l1DataFee, err := fees.CalculateL1DataFee(tx, statedb, api.backend.ChainConfig(), block.Number())
+		if err != nil {
+			failed = err
+			break
+		}
+		if _, err = core.ApplyMessage(vmenv, msg, new(core.GasPool).AddGas(msg.Gas()), l1DataFee); err != nil {
 			failed = err
 			break
 		}
@@ -683,7 +728,7 @@ func (api *API) standardTraceBlockToFile(ctx context.Context, block *types.Block
 		dumps       []string
 		signer      = types.MakeSigner(api.backend.ChainConfig(), block.Number())
 		chainConfig = api.backend.ChainConfig()
-		vmctx       = core.NewEVMBlockContext(block.Header(), api.chainContext(ctx), nil)
+		vmctx       = core.NewEVMBlockContext(block.Header(), api.chainContext(ctx), api.backend.ChainConfig(), nil)
 		canon       = true
 	)
 	// Check if there are any overrides: the caller may wish to enable a future
@@ -736,8 +781,11 @@ func (api *API) standardTraceBlockToFile(ctx context.Context, block *types.Block
 		}
 		// Execute the transaction and flush any traces to disk
 		vmenv := vm.NewEVM(vmctx, txContext, statedb, chainConfig, vmConf)
-		statedb.Prepare(tx.Hash(), i)
-		_, err = core.ApplyMessage(vmenv, msg, new(core.GasPool).AddGas(msg.Gas()))
+		statedb.SetTxContext(tx.Hash(), i)
+		l1DataFee, err := fees.CalculateL1DataFee(tx, statedb, api.backend.ChainConfig(), block.Number())
+		if err == nil {
+			_, err = core.ApplyMessage(vmenv, msg, new(core.GasPool).AddGas(msg.Gas()), l1DataFee)
+		}
 		if writer != nil {
 			writer.Flush()
 		}
@@ -774,7 +822,7 @@ func containsTx(block *types.Block, hash common.Hash) bool {
 // TraceTransaction returns the structured logs created during the execution of EVM
 // and returns them as a JSON object.
 func (api *API) TraceTransaction(ctx context.Context, hash common.Hash, config *TraceConfig) (interface{}, error) {
-	_, blockHash, blockNumber, index, err := api.backend.GetTransaction(ctx, hash)
+	tx, blockHash, blockNumber, index, err := api.backend.GetTransaction(ctx, hash)
 	if err != nil {
 		return nil, err
 	}
@@ -799,7 +847,11 @@ func (api *API) TraceTransaction(ctx context.Context, hash common.Hash, config *
 		TxIndex:   int(index),
 		TxHash:    hash,
 	}
-	return api.traceTx(ctx, msg, txctx, vmctx, statedb, config)
+	l1DataFee, err := fees.CalculateL1DataFee(tx, statedb, api.backend.ChainConfig(), block.Number())
+	if err != nil {
+		return nil, err
+	}
+	return api.traceTx(ctx, msg, txctx, vmctx, statedb, config, l1DataFee)
 }
 
 // TraceCall lets you trace a given eth_call. It collects the structured logs
@@ -842,7 +894,7 @@ func (api *API) TraceCall(ctx context.Context, args ethapi.TransactionArgs, bloc
 	if err != nil {
 		return nil, err
 	}
-	vmctx := core.NewEVMBlockContext(block.Header(), api.chainContext(ctx), nil)
+	vmctx := core.NewEVMBlockContext(block.Header(), api.chainContext(ctx), api.backend.ChainConfig(), nil)
 
 	var traceConfig *TraceConfig
 	if config != nil {
@@ -853,13 +905,20 @@ func (api *API) TraceCall(ctx context.Context, args ethapi.TransactionArgs, bloc
 			Reexec:    config.Reexec,
 		}
 	}
-	return api.traceTx(ctx, msg, new(Context), vmctx, statedb, traceConfig)
+
+	signer := types.MakeSigner(api.backend.ChainConfig(), block.Number())
+	l1DataFee, err := fees.EstimateL1DataFeeForMessage(msg, block.BaseFee(), api.backend.ChainConfig(), signer, statedb, block.Number())
+	if err != nil {
+		return nil, err
+	}
+
+	return api.traceTx(ctx, msg, new(Context), vmctx, statedb, traceConfig, l1DataFee)
 }
 
 // traceTx configures a new tracer according to the provided configuration, and
 // executes the given message in the provided environment. The return value will
 // be tracer dependent.
-func (api *API) traceTx(ctx context.Context, message core.Message, txctx *Context, vmctx vm.BlockContext, statedb *state.StateDB, config *TraceConfig) (interface{}, error) {
+func (api *API) traceTx(ctx context.Context, message core.Message, txctx *Context, vmctx vm.BlockContext, statedb *state.StateDB, config *TraceConfig, l1DataFee *big.Int) (interface{}, error) {
 	// Assemble the structured logger or the JavaScript tracer
 	var (
 		tracer    vm.EVMLogger
@@ -896,10 +955,15 @@ func (api *API) traceTx(ctx context.Context, message core.Message, txctx *Contex
 	// Run the transaction with tracing enabled.
 	vmenv := vm.NewEVM(vmctx, txContext, statedb, api.backend.ChainConfig(), vm.Config{Debug: true, Tracer: tracer, NoBaseFee: true})
 
-	// Call Prepare to clear out the statedb access list
-	statedb.Prepare(txctx.TxHash, txctx.TxIndex)
+	// If gasPrice is 0, make sure that the account has sufficient balance to cover `l1DataFee`.
+	if message.GasPrice().Cmp(big.NewInt(0)) == 0 {
+		statedb.AddBalance(message.From(), l1DataFee)
+	}
 
-	result, err := core.ApplyMessage(vmenv, message, new(core.GasPool).AddGas(message.Gas()))
+	// Call Prepare to clear out the statedb access list
+	statedb.SetTxContext(txctx.TxHash, txctx.TxIndex)
+
+	result, err := core.ApplyMessage(vmenv, message, new(core.GasPool).AddGas(message.Gas()), l1DataFee)
 	if err != nil {
 		return nil, fmt.Errorf("tracing failed: %w", err)
 	}
@@ -912,11 +976,12 @@ func (api *API) traceTx(ctx context.Context, message core.Message, txctx *Contex
 		if len(result.Revert()) > 0 {
 			returnVal = fmt.Sprintf("%x", result.Revert())
 		}
-		return &ethapi.ExecutionResult{
+		return &types.ExecutionResult{
 			Gas:         result.UsedGas,
 			Failed:      result.Failed(),
 			ReturnValue: returnVal,
-			StructLogs:  ethapi.FormatLogs(tracer.StructLogs()),
+			StructLogs:  vm.FormatLogs(tracer.StructLogs()),
+			L1DataFee:   (*hexutil.Big)(result.L1DataFee),
 		}, nil
 
 	case Tracer:
@@ -928,14 +993,20 @@ func (api *API) traceTx(ctx context.Context, message core.Message, txctx *Contex
 }
 
 // APIs return the collection of RPC services the tracer package offers.
-func APIs(backend Backend) []rpc.API {
+func APIs(backend Backend, scrollTracerWrapper scrollTracerWrapper) []rpc.API {
 	// Append all the local APIs and return
 	return []rpc.API{
 		{
 			Namespace: "debug",
 			Version:   "1.0",
-			Service:   NewAPI(backend),
+			Service:   NewAPI(backend, scrollTracerWrapper),
 			Public:    false,
+		},
+		{
+			Namespace: "scroll",
+			Version:   "1.0",
+			Service:   TraceBlock(NewAPI(backend, scrollTracerWrapper)),
+			Public:    true,
 		},
 	}
 }

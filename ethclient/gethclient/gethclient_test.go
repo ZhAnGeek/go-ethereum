@@ -22,25 +22,28 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/consensus/ethash"
-	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/eth"
-	"github.com/ethereum/go-ethereum/eth/ethconfig"
-	"github.com/ethereum/go-ethereum/ethclient"
-	"github.com/ethereum/go-ethereum/node"
-	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/rpc"
+	"github.com/scroll-tech/go-ethereum"
+	"github.com/scroll-tech/go-ethereum/common"
+	"github.com/scroll-tech/go-ethereum/consensus/ethash"
+	"github.com/scroll-tech/go-ethereum/core"
+	"github.com/scroll-tech/go-ethereum/core/rawdb"
+	"github.com/scroll-tech/go-ethereum/core/types"
+	"github.com/scroll-tech/go-ethereum/crypto"
+	"github.com/scroll-tech/go-ethereum/eth"
+	"github.com/scroll-tech/go-ethereum/eth/ethconfig"
+	"github.com/scroll-tech/go-ethereum/ethclient"
+	"github.com/scroll-tech/go-ethereum/node"
+	"github.com/scroll-tech/go-ethereum/params"
+	"github.com/scroll-tech/go-ethereum/rollup/rcfg"
+	"github.com/scroll-tech/go-ethereum/rpc"
 )
 
 var (
-	testKey, _  = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
-	testAddr    = crypto.PubkeyToAddress(testKey.PublicKey)
-	testBalance = big.NewInt(2e15)
+	testKey, _         = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
+	testAddr           = crypto.PubkeyToAddress(testKey.PublicKey)
+	emptyAccountKey, _ = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f292")
+	emptyAddr          = crypto.PubkeyToAddress(emptyAccountKey.PublicKey)
+	testBalance        = big.NewInt(2e15)
 )
 
 func newTestBackend(t *testing.T) (*node.Node, []*types.Block) {
@@ -54,7 +57,7 @@ func newTestBackend(t *testing.T) (*node.Node, []*types.Block) {
 	// Create Ethereum Service
 	config := &ethconfig.Config{Genesis: genesis}
 	config.Ethash.PowMode = ethash.ModeFake
-	ethservice, err := eth.New(n, config)
+	ethservice, err := eth.New(n, config, nil)
 	if err != nil {
 		t.Fatalf("can't create new ethereum service: %v", err)
 	}
@@ -72,8 +75,22 @@ func generateTestChain() (*core.Genesis, []*types.Block) {
 	db := rawdb.NewMemoryDatabase()
 	config := params.AllEthashProtocolChanges
 	genesis := &core.Genesis{
-		Config:    config,
-		Alloc:     core.GenesisAlloc{testAddr: {Balance: testBalance}},
+		Config: config,
+		Alloc: core.GenesisAlloc{
+			testAddr: {Balance: testBalance},
+			rcfg.L1GasPriceOracleAddress: {
+				Balance: big.NewInt(0),
+				Storage: map[common.Hash]common.Hash{
+					rcfg.L1BaseFeeSlot:     common.BigToHash(big.NewInt(10000)),
+					rcfg.OverheadSlot:      common.BigToHash(big.NewInt(10000)),
+					rcfg.ScalarSlot:        common.BigToHash(big.NewInt(10000)),
+					rcfg.L1BlobBaseFeeSlot: common.BigToHash(big.NewInt(10000)),
+					rcfg.CommitScalarSlot:  common.BigToHash(big.NewInt(10000)),
+					rcfg.BlobScalarSlot:    common.BigToHash(big.NewInt(10000)),
+					rcfg.IsCurieSlot:       common.BytesToHash([]byte{1}),
+				},
+			},
+		},
 		ExtraData: []byte("test genesis"),
 		Timestamp: 9000,
 	}
@@ -126,6 +143,9 @@ func TestGethClient(t *testing.T) {
 		}, {
 			"TestCallContract",
 			func(t *testing.T) { testCallContract(t, client) },
+		}, {
+			"TestCallContractNoGas",
+			func(t *testing.T) { testCallContractNoGas(t, client) },
 		},
 	}
 	t.Parallel()
@@ -303,6 +323,23 @@ func testCallContract(t *testing.T, client *rpc.Client) {
 	mapAcc := make(map[common.Address]OverrideAccount)
 	mapAcc[testAddr] = override
 	if _, err := ec.CallContract(context.Background(), msg, big.NewInt(0), &mapAcc); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func testCallContractNoGas(t *testing.T, client *rpc.Client) {
+	ec := New(client)
+	msg := ethereum.CallMsg{
+		From:     emptyAddr, // 0 balance
+		To:       &common.Address{},
+		Gas:      21000,
+		GasPrice: big.NewInt(0), // gas price 0
+		Value:    big.NewInt(0),
+	}
+
+	// this would fail with `insufficient funds for gas * price + value`
+	// before we started considering l1DataFee for 0 gas calls.
+	if _, err := ec.CallContract(context.Background(), msg, big.NewInt(0), nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

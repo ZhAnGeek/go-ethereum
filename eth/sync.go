@@ -21,12 +21,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/eth/downloader"
-	"github.com/ethereum/go-ethereum/eth/protocols/eth"
-	"github.com/ethereum/go-ethereum/log"
+	"github.com/scroll-tech/go-ethereum/common"
+	"github.com/scroll-tech/go-ethereum/core/rawdb"
+	"github.com/scroll-tech/go-ethereum/core/types"
+	"github.com/scroll-tech/go-ethereum/eth/downloader"
+	"github.com/scroll-tech/go-ethereum/eth/protocols/eth"
+	"github.com/scroll-tech/go-ethereum/log"
 )
 
 const (
@@ -156,8 +156,18 @@ func (cs *chainSyncer) nextSyncOp() *chainSyncOp {
 	if cs.handler.peers.len() < minPeers {
 		return nil
 	}
+
+	var syncWhiteList []string
+	chainConfig := cs.handler.chain.Config()
+	currentHeight := cs.handler.chain.CurrentHeader().Number.Uint64()
+	if chainConfig.Clique != nil {
+		shadowForkHeight := chainConfig.Clique.ShadowForkHeight
+		if shadowForkHeight != 0 && currentHeight >= shadowForkHeight {
+			syncWhiteList = cs.handler.shadowForkPeerIDs
+		}
+	}
 	// We have enough peers, check TD
-	peer := cs.handler.peers.peerWithHighestTD()
+	peer := cs.handler.peers.peerWithHighestTD(syncWhiteList)
 	if peer == nil {
 		return nil
 	}

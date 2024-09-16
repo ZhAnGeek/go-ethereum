@@ -24,11 +24,13 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/rpc"
+	"github.com/scroll-tech/go-ethereum"
+	"github.com/scroll-tech/go-ethereum/common"
+	"github.com/scroll-tech/go-ethereum/common/hexutil"
+	"github.com/scroll-tech/go-ethereum/core/types"
+	"github.com/scroll-tech/go-ethereum/eth"
+	"github.com/scroll-tech/go-ethereum/eth/tracers"
+	"github.com/scroll-tech/go-ethereum/rpc"
 )
 
 // Client defines typed wrappers for the Ethereum RPC API.
@@ -52,6 +54,11 @@ func DialContext(ctx context.Context, rawurl string) (*Client, error) {
 // NewClient creates a client that uses the given RPC client.
 func NewClient(c *rpc.Client) *Client {
 	return &Client{c}
+}
+
+// SetHeader expose the function, in able to set http header.
+func (ec *Client) SetHeader(key, value string) {
+	ec.c.SetHeader(key, value)
 }
 
 func (ec *Client) Close() {
@@ -92,6 +99,23 @@ func (ec *Client) BlockNumber(ctx context.Context) (uint64, error) {
 	var result hexutil.Uint64
 	err := ec.c.CallContext(ctx, &result, "eth_blockNumber")
 	return uint64(result), err
+}
+
+// PeerCount returns the number of p2p peers as reported by the net_peerCount method.
+func (ec *Client) PeerCount(ctx context.Context) (uint64, error) {
+	var result hexutil.Uint64
+	err := ec.c.CallContext(ctx, &result, "net_peerCount")
+	return uint64(result), err
+}
+
+// BlockReceipts returns the receipts of a given block number or hash
+func (ec *Client) BlockReceipts(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) ([]*types.Receipt, error) {
+	var r []*types.Receipt
+	err := ec.c.CallContext(ctx, &r, "eth_getBlockReceipts", blockNrOrHash)
+	if err == nil && r == nil {
+		return nil, ethereum.NotFound
+	}
+	return r, err
 }
 
 type rpcBlock struct {
@@ -325,6 +349,152 @@ func (ec *Client) SubscribeNewHead(ctx context.Context, ch chan<- *types.Header)
 	return ec.c.EthSubscribe(ctx, ch, "newHeads")
 }
 
+// GetBlockTraceByHash returns the BlockTrace given the block hash.
+func (ec *Client) GetBlockTraceByHash(ctx context.Context, blockHash common.Hash) (*types.BlockTrace, error) {
+	blockTrace := &types.BlockTrace{}
+	return blockTrace, ec.c.CallContext(ctx, &blockTrace, "scroll_getBlockTraceByNumberOrHash", blockHash)
+}
+
+// GetBlockTraceByNumber returns the BlockTrace given the block number.
+func (ec *Client) GetBlockTraceByNumber(ctx context.Context, number *big.Int) (*types.BlockTrace, error) {
+	blockTrace := &types.BlockTrace{}
+	return blockTrace, ec.c.CallContext(ctx, &blockTrace, "scroll_getBlockTraceByNumberOrHash", toBlockNumArg(number))
+}
+
+// GetTxBlockTraceOnTopOfBlock returns the BlockTrace given the tx and block.
+func (ec *Client) GetTxBlockTraceOnTopOfBlock(ctx context.Context, tx *types.Transaction, blockNumberOrHash rpc.BlockNumberOrHash, config *tracers.TraceConfig) (*types.BlockTrace, error) {
+	blockTrace := &types.BlockTrace{}
+	return blockTrace, ec.c.CallContext(ctx, &blockTrace, "scroll_getTxBlockTraceOnTopOfBlock", tx, blockNumberOrHash, config)
+}
+
+// GetNumSkippedTransactions returns the ...
+func (ec *Client) GetNumSkippedTransactions(ctx context.Context) (uint64, error) {
+	var num uint64
+	return num, ec.c.CallContext(ctx, &num, "scroll_getNumSkippedTransactions")
+}
+
+// GetSkippedTransactionHashes returns the BlockTrace given the tx and block.
+func (ec *Client) GetSkippedTransactionHashes(ctx context.Context, from uint64, to uint64) ([]common.Hash, error) {
+	hashes := []common.Hash{}
+	return hashes, ec.c.CallContext(ctx, &hashes, "scroll_getSkippedTransactionHashes", from, to)
+}
+
+// GetSkippedTransaction returns the BlockTrace given the tx and block.
+func (ec *Client) GetSkippedTransaction(ctx context.Context, txHash common.Hash) (*eth.RPCTransaction, error) {
+	tx := &eth.RPCTransaction{}
+	return tx, ec.c.CallContext(ctx, &tx, "scroll_getSkippedTransaction", txHash)
+}
+
+type rpcRowConsumption struct {
+	RowConsumption types.RowConsumption `json:"rowConsumption"`
+}
+
+// UnmarshalJSON unmarshals from JSON.
+func (r *rpcRowConsumption) UnmarshalJSON(input []byte) error {
+	type rpcRowConsumption struct {
+		RowConsumption types.RowConsumption `json:"rowConsumption"`
+	}
+	var dec rpcRowConsumption
+	if err := json.Unmarshal(input, &dec); err != nil {
+		return err
+	}
+	if dec.RowConsumption == nil {
+		return errors.New("missing required field 'RowConsumption' for rpcRowConsumption")
+	}
+	r.RowConsumption = dec.RowConsumption
+	return nil
+}
+
+// GetBlockByNumberOrHash returns the requested block
+func (ec *Client) GetBlockByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*types.BlockWithRowConsumption, error) {
+	var raw json.RawMessage
+	var err error
+	if number, ok := blockNrOrHash.Number(); ok {
+		err = ec.c.CallContext(ctx, &raw, "scroll_getBlockByNumber", number, true)
+	}
+	if hash, ok := blockNrOrHash.Hash(); ok {
+		err = ec.c.CallContext(ctx, &raw, "scroll_getBlockByHash", hash, true)
+	}
+	if err != nil {
+		return nil, err
+	} else if len(raw) == 0 {
+		return nil, ethereum.NotFound
+	}
+	// Decode header and transactions.
+	var head *types.Header
+	var body rpcBlock
+	var rpcRc rpcRowConsumption
+	var rc *types.RowConsumption
+	if err := json.Unmarshal(raw, &head); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(raw, &rpcRc); err != nil {
+		// don't return error here if there is no RowConsumption data, because many l2geth nodes will not have this data
+		// instead of error l2_watcher and other services that require RowConsumption should check it
+		rc = nil
+	} else {
+		rc = &rpcRc.RowConsumption
+	}
+	// Quick-verify transaction and uncle lists. This mostly helps with debugging the server.
+	if head.UncleHash == types.EmptyUncleHash && len(body.UncleHashes) > 0 {
+		return nil, fmt.Errorf("server returned non-empty uncle list but block header indicates no uncles")
+	}
+	if head.UncleHash != types.EmptyUncleHash && len(body.UncleHashes) == 0 {
+		return nil, fmt.Errorf("server returned empty uncle list but block header indicates uncles")
+	}
+	if head.TxHash == types.EmptyRootHash && len(body.Transactions) > 0 {
+		return nil, fmt.Errorf("server returned non-empty transaction list but block header indicates no transactions")
+	}
+	if head.TxHash != types.EmptyRootHash && len(body.Transactions) == 0 {
+		return nil, fmt.Errorf("server returned empty transaction list but block header indicates transactions")
+	}
+	// Load uncles because they are not included in the block response.
+	var uncles []*types.Header
+	if len(body.UncleHashes) > 0 {
+		uncles = make([]*types.Header, len(body.UncleHashes))
+		reqs := make([]rpc.BatchElem, len(body.UncleHashes))
+		for i := range reqs {
+			reqs[i] = rpc.BatchElem{
+				Method: "eth_getUncleByBlockHashAndIndex",
+				Args:   []interface{}{body.Hash, hexutil.EncodeUint64(uint64(i))},
+				Result: &uncles[i],
+			}
+		}
+		if err := ec.c.BatchCallContext(ctx, reqs); err != nil {
+			return nil, err
+		}
+		for i := range reqs {
+			if reqs[i].Error != nil {
+				return nil, reqs[i].Error
+			}
+			if uncles[i] == nil {
+				return nil, fmt.Errorf("got null header for uncle %d of block %x", i, body.Hash[:])
+			}
+		}
+	}
+	// Fill the sender cache of transactions in the block.
+	txs := make([]*types.Transaction, len(body.Transactions))
+	for i, tx := range body.Transactions {
+		if tx.From != nil {
+			setSenderFromServer(tx.tx, *tx.From, body.Hash)
+		}
+		txs[i] = tx.tx
+	}
+	block := types.NewBlockWithHeader(head).WithBody(txs, uncles)
+	return &types.BlockWithRowConsumption{
+		Block:          block,
+		RowConsumption: rc,
+	}, nil
+}
+
+// SubscribeNewBlockTrace subscribes to block execution trace when a new block is created.
+func (ec *Client) SubscribeNewBlockTrace(ctx context.Context, ch chan<- *types.BlockTrace) (ethereum.Subscription, error) {
+	return ec.c.EthSubscribe(ctx, ch, "newBlockTrace")
+}
+
 // State Access
 
 // NetworkID returns the network ID (also known as the chain ID) for this chain.
@@ -530,9 +700,21 @@ func toBlockNumArg(number *big.Int) string {
 	if number == nil {
 		return "latest"
 	}
-	pending := big.NewInt(-1)
+	latest := big.NewInt(int64(rpc.LatestBlockNumber))
+	if number.Cmp(latest) == 0 {
+		return "latest"
+	}
+	pending := big.NewInt(int64(rpc.PendingBlockNumber))
 	if number.Cmp(pending) == 0 {
 		return "pending"
+	}
+	finalized := big.NewInt(int64(rpc.FinalizedBlockNumber))
+	if number.Cmp(finalized) == 0 {
+		return "finalized"
+	}
+	safe := big.NewInt(int64(rpc.SafeBlockNumber))
+	if number.Cmp(safe) == 0 {
+		return "safe"
 	}
 	return hexutil.EncodeBig(number)
 }
@@ -553,6 +735,21 @@ func toCallArg(msg ethereum.CallMsg) interface{} {
 	}
 	if msg.GasPrice != nil {
 		arg["gasPrice"] = (*hexutil.Big)(msg.GasPrice)
+	}
+	if msg.GasFeeCap != nil {
+		arg["maxFeePerGas"] = (*hexutil.Big)(msg.GasFeeCap)
+	}
+	if msg.GasTipCap != nil {
+		arg["maxPriorityFeePerGas"] = (*hexutil.Big)(msg.GasTipCap)
+	}
+	if msg.AccessList != nil {
+		arg["accessList"] = msg.AccessList
+	}
+	if msg.BlobGasFeeCap != nil {
+		arg["maxFeePerBlobGas"] = (*hexutil.Big)(msg.BlobGasFeeCap)
+	}
+	if msg.BlobHashes != nil {
+		arg["blobVersionedHashes"] = msg.BlobHashes
 	}
 	return arg
 }

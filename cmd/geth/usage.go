@@ -22,10 +22,11 @@ import (
 	"io"
 	"sort"
 
-	"github.com/ethereum/go-ethereum/cmd/utils"
-	"github.com/ethereum/go-ethereum/internal/debug"
-	"github.com/ethereum/go-ethereum/internal/flags"
 	"gopkg.in/urfave/cli.v1"
+
+	"github.com/scroll-tech/go-ethereum/cmd/utils"
+	"github.com/scroll-tech/go-ethereum/internal/debug"
+	"github.com/scroll-tech/go-ethereum/internal/flags"
 )
 
 // AppHelpFlagGroups is the application flags, grouped by functionality.
@@ -46,6 +47,9 @@ var AppHelpFlagGroups = []flags.FlagGroup{
 			utils.RinkebyFlag,
 			utils.RopstenFlag,
 			utils.SepoliaFlag,
+			utils.ScrollAlphaFlag,
+			utils.ScrollSepoliaFlag,
+			utils.ScrollFlag,
 			utils.SyncModeFlag,
 			utils.ExitWhenSyncedFlag,
 			utils.GCModeFlag,
@@ -189,6 +193,8 @@ var AppHelpFlagGroups = []flags.FlagGroup{
 			utils.MinerExtraDataFlag,
 			utils.MinerRecommitIntervalFlag,
 			utils.MinerNoVerifyFlag,
+			utils.MinerStoreSkippedTxTracesFlag,
+			utils.MinerMaxAccountsNumFlag,
 		},
 	},
 	{
@@ -198,6 +204,7 @@ var AppHelpFlagGroups = []flags.FlagGroup{
 			utils.GpoPercentileFlag,
 			utils.GpoMaxGasPriceFlag,
 			utils.GpoIgnoreGasPriceFlag,
+			utils.GpoCongestionThresholdFlag,
 		},
 	},
 	{
@@ -230,6 +237,7 @@ var AppHelpFlagGroups = []flags.FlagGroup{
 			utils.BloomFilterSizeFlag,
 			cli.HelpFlag,
 			utils.CatalystFlag,
+			utils.ShadowforkPeersFlag,
 		},
 	},
 }

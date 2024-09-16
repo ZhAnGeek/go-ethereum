@@ -20,10 +20,10 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/ethereum/go-ethereum/trie"
+	"github.com/scroll-tech/go-ethereum/common"
+	"github.com/scroll-tech/go-ethereum/core/types"
+	"github.com/scroll-tech/go-ethereum/rlp"
+	"github.com/scroll-tech/go-ethereum/trie"
 )
 
 // NodeIterator is an iterator to traverse the entire state trie post-order,
@@ -117,12 +117,12 @@ func (it *NodeIterator) step() error {
 	if !it.dataIt.Next(true) {
 		it.dataIt = nil
 	}
-	if !bytes.Equal(account.CodeHash, emptyCodeHash) {
-		it.codeHash = common.BytesToHash(account.CodeHash)
+	if !bytes.Equal(account.KeccakCodeHash, emptyKeccakCodeHash) {
+		it.codeHash = common.BytesToHash(account.KeccakCodeHash)
 		addrHash := common.BytesToHash(it.stateIt.LeafKey())
-		it.code, err = it.state.db.ContractCode(addrHash, common.BytesToHash(account.CodeHash))
+		it.code, err = it.state.db.ContractCode(addrHash, common.BytesToHash(account.KeccakCodeHash))
 		if err != nil {
-			return fmt.Errorf("code %x: %v", account.CodeHash, err)
+			return fmt.Errorf("code %x: %v", account.KeccakCodeHash, err)
 		}
 	}
 	it.accountHash = it.stateIt.Parent()

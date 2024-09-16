@@ -19,7 +19,7 @@ package state
 import (
 	"math/big"
 
-	"github.com/ethereum/go-ethereum/common"
+	"github.com/scroll-tech/go-ethereum/common"
 )
 
 // journalEntry is a modification entry in the state change journal that can be
@@ -113,8 +113,8 @@ type (
 		key, prevalue common.Hash
 	}
 	codeChange struct {
-		account            *common.Address
-		prevcode, prevhash []byte
+		account  *common.Address
+		prevcode []byte
 	}
 
 	// Changes to other state values.
@@ -137,6 +137,11 @@ type (
 	accessListAddSlotChange struct {
 		address *common.Address
 		slot    *common.Hash
+	}
+
+	transientStorageChange struct {
+		account       *common.Address
+		key, prevalue common.Hash
 	}
 )
 
@@ -198,7 +203,7 @@ func (ch nonceChange) dirtied() *common.Address {
 }
 
 func (ch codeChange) revert(s *StateDB) {
-	s.getStateObject(*ch.account).setCode(common.BytesToHash(ch.prevhash), ch.prevcode)
+	s.getStateObject(*ch.account).setCode(ch.prevcode)
 }
 
 func (ch codeChange) dirtied() *common.Address {
@@ -211,6 +216,14 @@ func (ch storageChange) revert(s *StateDB) {
 
 func (ch storageChange) dirtied() *common.Address {
 	return ch.account
+}
+
+func (ch transientStorageChange) revert(s *StateDB) {
+	s.setTransientState(*ch.account, ch.key, ch.prevalue)
+}
+
+func (ch transientStorageChange) dirtied() *common.Address {
+	return nil
 }
 
 func (ch refundChange) revert(s *StateDB) {

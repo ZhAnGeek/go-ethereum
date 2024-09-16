@@ -22,11 +22,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ethereum/go-ethereum/cmd/utils"
-	"github.com/ethereum/go-ethereum/console"
-	"github.com/ethereum/go-ethereum/node"
-	"github.com/ethereum/go-ethereum/rpc"
 	"gopkg.in/urfave/cli.v1"
+
+	"github.com/scroll-tech/go-ethereum/cmd/utils"
+	"github.com/scroll-tech/go-ethereum/console"
+	"github.com/scroll-tech/go-ethereum/node"
+	"github.com/scroll-tech/go-ethereum/rpc"
 )
 
 var (
@@ -136,6 +137,12 @@ func remoteConsole(ctx *cli.Context) error {
 				path = filepath.Join(path, "goerli")
 			} else if ctx.GlobalBool(utils.SepoliaFlag.Name) {
 				path = filepath.Join(path, "sepolia")
+			} else if ctx.GlobalBool(utils.ScrollAlphaFlag.Name) {
+				path = filepath.Join(path, "scroll-alpha")
+			} else if ctx.GlobalBool(utils.ScrollSepoliaFlag.Name) {
+				path = filepath.Join(path, "scroll-sepolia")
+			} else if ctx.GlobalBool(utils.ScrollFlag.Name) {
+				path = filepath.Join(path, "scroll")
 			}
 		}
 		endpoint = fmt.Sprintf("%s/geth.ipc", path)

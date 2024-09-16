@@ -18,20 +18,22 @@ package light
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"sync"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/core/state"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/event"
-	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/params"
+	"github.com/scroll-tech/go-ethereum/common"
+	"github.com/scroll-tech/go-ethereum/core"
+	"github.com/scroll-tech/go-ethereum/core/rawdb"
+	"github.com/scroll-tech/go-ethereum/core/state"
+	"github.com/scroll-tech/go-ethereum/core/types"
+	"github.com/scroll-tech/go-ethereum/ethdb"
+	"github.com/scroll-tech/go-ethereum/event"
+	"github.com/scroll-tech/go-ethereum/log"
+	"github.com/scroll-tech/go-ethereum/params"
+	"github.com/scroll-tech/go-ethereum/rollup/fees"
 )
 
 const (
@@ -69,6 +71,9 @@ type TxPool struct {
 
 	istanbul bool // Fork indicator whether we are in the istanbul stage.
 	eip2718  bool // Fork indicator whether we are in the eip2718 stage.
+	shanghai bool // Fork indicator whether we are in the shanghai stage.
+
+	currentHead *big.Int // Current blockchain head
 }
 
 // TxRelayBackend provides an interface to the mechanism that forwards transacions
@@ -76,10 +81,13 @@ type TxPool struct {
 //
 // Send instructs backend to forward new transactions
 // NewHead notifies backend about a new head after processed by the tx pool,
-//  including  mined and rolled back transactions since the last event
+//
+//	including  mined and rolled back transactions since the last event
+//
 // Discard notifies backend about transactions that should be discarded either
-//  because they have been replaced by a re-send or because they have been mined
-//  long ago and no rollback is expected
+//
+//	because they have been replaced by a re-send or because they have been mined
+//	long ago and no rollback is expected
 type TxRelayBackend interface {
 	Send(txs types.Transactions)
 	NewHead(head common.Hash, mined []common.Hash, rollback []common.Hash)
@@ -315,6 +323,9 @@ func (pool *TxPool) setNewHead(head *types.Header) {
 	next := new(big.Int).Add(head.Number, big.NewInt(1))
 	pool.istanbul = pool.config.IsIstanbul(next)
 	pool.eip2718 = pool.config.IsBerlin(next)
+	pool.shanghai = pool.config.IsShanghai(next)
+
+	pool.currentHead = next
 }
 
 // Stop stops the light transaction pool
@@ -340,6 +351,20 @@ func (pool *TxPool) Stats() (pending int) {
 
 	pending = len(pool.pending)
 	return
+}
+
+// StatsWithMinBaseFee returns the number of currently pending (locally created) transactions and ignores the base fee.
+func (pool *TxPool) StatsWithMinBaseFee(minBaseFee *big.Int) (pending int) {
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+
+	for _, tx := range pool.pending {
+		if _, err := tx.EffectiveGasTip(minBaseFee); err == nil {
+			pending++
+		}
+	}
+
+	return pending
 }
 
 // validateTx checks whether a transaction is valid according to the consensus rules.
@@ -374,15 +399,28 @@ func (pool *TxPool) validateTx(ctx context.Context, tx *types.Transaction) error
 	if tx.Value().Sign() < 0 {
 		return core.ErrNegativeValue
 	}
-
+	// 1. Check balance >= transaction cost (V + GP * GL) to maintain compatibility with the logic without considering L1 data fee.
 	// Transactor should have enough funds to cover the costs
 	// cost == V + GP * GL
 	if b := currentState.GetBalance(from); b.Cmp(tx.Cost()) < 0 {
 		return core.ErrInsufficientFunds
 	}
+	// 2. If FeeVault is enabled, perform an additional check for L1 data fees.
+	if pool.config.Scroll.FeeVaultEnabled() {
+		// Get L1 data fee in current state
+		l1DataFee, err := fees.CalculateL1DataFee(tx, currentState, pool.config, pool.currentHead)
+		if err != nil {
+			return fmt.Errorf("failed to calculate L1 data fee, err: %w", err)
+		}
+		// Transactor should have enough funds to cover the costs
+		// cost == L1 data fee + V + GP * GL
+		if b := currentState.GetBalance(from); b.Cmp(new(big.Int).Add(tx.Cost(), l1DataFee)) < 0 {
+			return errors.New("invalid transaction: insufficient funds for l1fee + gas * price + value")
+		}
+	}
 
 	// Should supply enough intrinsic gas
-	gas, err := core.IntrinsicGas(tx.Data(), tx.AccessList(), tx.To() == nil, true, pool.istanbul)
+	gas, err := core.IntrinsicGas(tx.Data(), tx.AccessList(), tx.To() == nil, true, pool.istanbul, pool.shanghai)
 	if err != nil {
 		return err
 	}
@@ -400,6 +438,7 @@ func (pool *TxPool) add(ctx context.Context, tx *types.Transaction) error {
 	if pool.pending[hash] != nil {
 		return fmt.Errorf("Known transaction (%x)", hash[:4])
 	}
+
 	err := pool.validateTx(ctx, tx)
 	if err != nil {
 		return err

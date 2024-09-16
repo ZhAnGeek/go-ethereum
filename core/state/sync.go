@@ -19,11 +19,11 @@ package state
 import (
 	"bytes"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/ethereum/go-ethereum/trie"
+	"github.com/scroll-tech/go-ethereum/common"
+	"github.com/scroll-tech/go-ethereum/core/types"
+	"github.com/scroll-tech/go-ethereum/ethdb"
+	"github.com/scroll-tech/go-ethereum/rlp"
+	"github.com/scroll-tech/go-ethereum/trie"
 )
 
 // NewStateSync create a new state trie download scheduler.
@@ -49,7 +49,7 @@ func NewStateSync(root common.Hash, database ethdb.KeyValueReader, bloom *trie.S
 			return err
 		}
 		syncer.AddSubTrie(obj.Root, hexpath, parent, onSlot)
-		syncer.AddCodeEntry(common.BytesToHash(obj.CodeHash), hexpath, parent)
+		syncer.AddCodeEntry(common.BytesToHash(obj.KeccakCodeHash), hexpath, parent)
 		return nil
 	}
 	syncer = trie.NewSync(root, database, onAccount, bloom)

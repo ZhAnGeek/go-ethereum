@@ -19,6 +19,7 @@ package utils
 
 import (
 	"crypto/ecdsa"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -26,6 +27,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	godebug "runtime/debug"
 	"strconv"
 	"strings"
@@ -33,42 +35,47 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/ethereum/go-ethereum/accounts"
-	"github.com/ethereum/go-ethereum/accounts/keystore"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/fdlimit"
-	"github.com/ethereum/go-ethereum/consensus"
-	"github.com/ethereum/go-ethereum/consensus/clique"
-	"github.com/ethereum/go-ethereum/consensus/ethash"
-	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/core/vm"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/eth"
-	"github.com/ethereum/go-ethereum/eth/downloader"
-	"github.com/ethereum/go-ethereum/eth/ethconfig"
-	"github.com/ethereum/go-ethereum/eth/gasprice"
-	"github.com/ethereum/go-ethereum/eth/tracers"
-	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/ethstats"
-	"github.com/ethereum/go-ethereum/graphql"
-	"github.com/ethereum/go-ethereum/internal/ethapi"
-	"github.com/ethereum/go-ethereum/internal/flags"
-	"github.com/ethereum/go-ethereum/les"
-	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/metrics"
-	"github.com/ethereum/go-ethereum/metrics/exp"
-	"github.com/ethereum/go-ethereum/metrics/influxdb"
-	"github.com/ethereum/go-ethereum/miner"
-	"github.com/ethereum/go-ethereum/node"
-	"github.com/ethereum/go-ethereum/p2p"
-	"github.com/ethereum/go-ethereum/p2p/enode"
-	"github.com/ethereum/go-ethereum/p2p/nat"
-	"github.com/ethereum/go-ethereum/p2p/netutil"
-	"github.com/ethereum/go-ethereum/params"
 	pcsclite "github.com/gballet/go-libpcsclite"
 	gopsutil "github.com/shirou/gopsutil/mem"
 	"gopkg.in/urfave/cli.v1"
+
+	"github.com/scroll-tech/go-ethereum/accounts"
+	"github.com/scroll-tech/go-ethereum/accounts/keystore"
+	"github.com/scroll-tech/go-ethereum/common"
+	"github.com/scroll-tech/go-ethereum/common/fdlimit"
+	"github.com/scroll-tech/go-ethereum/common/hexutil"
+	"github.com/scroll-tech/go-ethereum/consensus"
+	"github.com/scroll-tech/go-ethereum/consensus/clique"
+	"github.com/scroll-tech/go-ethereum/consensus/ethash"
+	"github.com/scroll-tech/go-ethereum/core"
+	"github.com/scroll-tech/go-ethereum/core/rawdb"
+	"github.com/scroll-tech/go-ethereum/core/vm"
+	"github.com/scroll-tech/go-ethereum/crypto"
+	"github.com/scroll-tech/go-ethereum/eth"
+	"github.com/scroll-tech/go-ethereum/eth/downloader"
+	"github.com/scroll-tech/go-ethereum/eth/ethconfig"
+	"github.com/scroll-tech/go-ethereum/eth/gasprice"
+	"github.com/scroll-tech/go-ethereum/eth/tracers"
+	"github.com/scroll-tech/go-ethereum/ethclient"
+	"github.com/scroll-tech/go-ethereum/ethdb"
+	"github.com/scroll-tech/go-ethereum/ethstats"
+	"github.com/scroll-tech/go-ethereum/graphql"
+	"github.com/scroll-tech/go-ethereum/internal/ethapi"
+	"github.com/scroll-tech/go-ethereum/internal/flags"
+	"github.com/scroll-tech/go-ethereum/les"
+	"github.com/scroll-tech/go-ethereum/log"
+	"github.com/scroll-tech/go-ethereum/metrics"
+	"github.com/scroll-tech/go-ethereum/metrics/exp"
+	"github.com/scroll-tech/go-ethereum/metrics/influxdb"
+	"github.com/scroll-tech/go-ethereum/miner"
+	"github.com/scroll-tech/go-ethereum/node"
+	"github.com/scroll-tech/go-ethereum/p2p"
+	"github.com/scroll-tech/go-ethereum/p2p/enode"
+	"github.com/scroll-tech/go-ethereum/p2p/nat"
+	"github.com/scroll-tech/go-ethereum/p2p/netutil"
+	"github.com/scroll-tech/go-ethereum/params"
+	"github.com/scroll-tech/go-ethereum/rollup/tracing"
+	"github.com/scroll-tech/go-ethereum/rpc"
 )
 
 func init() {
@@ -98,6 +105,11 @@ func printHelp(out io.Writer, templ string, data interface{}) {
 	}
 	w.Flush()
 }
+
+const (
+	GCModeFull    = "full"
+	GCModeArchive = "archive"
+)
 
 // These are all the command line flags we support.
 // If you add to this list, please remember to include the
@@ -158,6 +170,18 @@ var (
 	SepoliaFlag = cli.BoolFlag{
 		Name:  "sepolia",
 		Usage: "Sepolia network: pre-configured proof-of-work test network",
+	}
+	ScrollAlphaFlag = cli.BoolFlag{
+		Name:  "scroll-alpha",
+		Usage: "Scroll Alpha test network",
+	}
+	ScrollSepoliaFlag = cli.BoolFlag{
+		Name:  "scroll-sepolia",
+		Usage: "Scroll Sepolia test network",
+	}
+	ScrollFlag = cli.BoolFlag{
+		Name:  "scroll",
+		Usage: "Scroll mainnet",
 	}
 	DeveloperFlag = cli.BoolFlag{
 		Name:  "dev",
@@ -220,7 +244,7 @@ var (
 	GCModeFlag = cli.StringFlag{
 		Name:  "gcmode",
 		Usage: `Blockchain garbage collection mode ("full", "archive")`,
-		Value: "full",
+		Value: GCModeArchive,
 	}
 	SnapshotFlag = cli.BoolTFlag{
 		Name:  "snapshot",
@@ -473,6 +497,15 @@ var (
 		Name:  "miner.noverify",
 		Usage: "Disable remote sealing verification",
 	}
+	MinerStoreSkippedTxTracesFlag = cli.BoolFlag{
+		Name:  "miner.storeskippedtxtraces",
+		Usage: "Store the wrapped traces when storing a skipped tx",
+	}
+	MinerMaxAccountsNumFlag = cli.IntFlag{
+		Name:  "miner.maxaccountsnum",
+		Usage: "Maximum number of accounts that miner will fetch the pending transactions of when building a new block",
+		Value: math.MaxInt,
+	}
 	// Account settings
 	UnlockedAccountFlag = cli.StringFlag{
 		Name:  "unlock",
@@ -703,6 +736,11 @@ var (
 		Usage: "Gas price below which gpo will ignore transactions",
 		Value: ethconfig.Defaults.GPO.IgnorePrice.Int64(),
 	}
+	GpoCongestionThresholdFlag = cli.IntFlag{
+		Name:  "gpo.congestionthreshold",
+		Usage: "Number of pending transactions to consider the network congested and suggest a minimum tip cap",
+		Value: ethconfig.Defaults.GPO.CongestedThreshold,
+	}
 
 	// Metrics flags
 	MetricsEnabledFlag = cli.BoolFlag{
@@ -789,6 +827,50 @@ var (
 		Name:  "catalyst",
 		Usage: "Catalyst mode (eth2 integration testing)",
 	}
+
+	// L1Settings
+	L1EndpointFlag = cli.StringFlag{
+		Name:  "l1.endpoint",
+		Usage: "Endpoint of L1 HTTP-RPC server",
+	}
+	L1ConfirmationsFlag = cli.StringFlag{
+		Name:  "l1.confirmations",
+		Usage: "Number of confirmations on L1 needed for finalization, or \"safe\" or \"finalized\"",
+	}
+	L1DeploymentBlockFlag = cli.Int64Flag{
+		Name:  "l1.sync.startblock",
+		Usage: "L1 block height to start syncing from. Should be set to the L1 message queue deployment block number.",
+	}
+
+	// Circuit capacity check settings
+	CircuitCapacityCheckEnabledFlag = cli.BoolFlag{
+		Name:  "ccc",
+		Usage: "Enable circuit capacity check during block validation",
+	}
+
+	CircuitCapacityCheckWorkersFlag = cli.UintFlag{
+		Name:  "ccc.numworkers",
+		Usage: "Set the number of workers that will be used for background CCC tasks",
+		Value: uint(runtime.GOMAXPROCS(0)),
+	}
+
+	// Rollup verify service settings
+	RollupVerifyEnabledFlag = cli.BoolFlag{
+		Name:  "rollup.verify",
+		Usage: "Enable verification of batch consistency between L1 and L2 in rollup",
+	}
+
+	// Max block range for `eth_getLogs` method
+	MaxBlockRangeFlag = cli.Int64Flag{
+		Name:  "rpc.getlogs.maxrange",
+		Usage: "Limit max fetched block range for `eth_getLogs` method",
+	}
+
+	// Shadowfork peers
+	ShadowforkPeersFlag = cli.StringSliceFlag{
+		Name:  "net.shadowforkpeers",
+		Usage: "peer ids of shadow fork peers",
+	}
 )
 
 // MakeDataDir retrieves the currently requested data directory, terminating
@@ -809,6 +891,15 @@ func MakeDataDir(ctx *cli.Context) string {
 		}
 		if ctx.GlobalBool(SepoliaFlag.Name) {
 			return filepath.Join(path, "sepolia")
+		}
+		if ctx.GlobalBool(ScrollAlphaFlag.Name) {
+			return filepath.Join(path, "scroll-alpha")
+		}
+		if ctx.GlobalBool(ScrollSepoliaFlag.Name) {
+			return filepath.Join(path, "scroll-sepolia")
+		}
+		if ctx.GlobalBool(ScrollFlag.Name) {
+			return filepath.Join(path, "scroll")
 		}
 		return path
 	}
@@ -864,6 +955,12 @@ func setBootstrapNodes(ctx *cli.Context, cfg *p2p.Config) {
 		urls = params.RinkebyBootnodes
 	case ctx.GlobalBool(GoerliFlag.Name):
 		urls = params.GoerliBootnodes
+	case ctx.GlobalBool(ScrollAlphaFlag.Name):
+		urls = params.ScrollAlphaBootnodes
+	case ctx.GlobalBool(ScrollSepoliaFlag.Name):
+		urls = params.ScrollSepoliaBootnodes
+	case ctx.GlobalBool(ScrollFlag.Name):
+		urls = params.ScrollMainnetBootnodes
 	case cfg.BootstrapNodes != nil:
 		return // already set, don't apply defaults.
 	}
@@ -1216,6 +1313,7 @@ func SetNodeConfig(ctx *cli.Context, cfg *node.Config) {
 	setNodeUserIdent(ctx, cfg)
 	setDataDir(ctx, cfg)
 	setSmartCard(ctx, cfg)
+	setL1(ctx, cfg)
 
 	if ctx.GlobalIsSet(ExternalSignerFlag.Name) {
 		cfg.ExternalSigner = ctx.GlobalString(ExternalSignerFlag.Name)
@@ -1238,6 +1336,42 @@ func SetNodeConfig(ctx *cli.Context, cfg *node.Config) {
 	}
 	if ctx.GlobalIsSet(InsecureUnlockAllowedFlag.Name) {
 		cfg.InsecureUnlockAllowed = ctx.GlobalBool(InsecureUnlockAllowedFlag.Name)
+	}
+}
+
+func unmarshalBlockNumber(input string) (rpc.BlockNumber, error) {
+	switch input {
+	case "finalized":
+		return rpc.FinalizedBlockNumber, nil
+	case "safe":
+		return rpc.SafeBlockNumber, nil
+	}
+	blockNum, err := hexutil.DecodeUint64(input)
+	if err == nil && blockNum <= math.MaxInt64 {
+		return rpc.BlockNumber(blockNum), nil
+	}
+	blockNum, err = strconv.ParseUint(input, 10, 64)
+	if err == nil && blockNum <= math.MaxInt64 {
+		return rpc.BlockNumber(blockNum), nil
+	}
+	return 0, errors.New("incorrect value")
+}
+
+func setL1(ctx *cli.Context, cfg *node.Config) {
+	var err error
+	if ctx.GlobalIsSet(L1EndpointFlag.Name) {
+		cfg.L1Endpoint = ctx.GlobalString(L1EndpointFlag.Name)
+	}
+	if ctx.GlobalIsSet(L1ConfirmationsFlag.Name) {
+		cfg.L1Confirmations, err = unmarshalBlockNumber(ctx.GlobalString(L1ConfirmationsFlag.Name))
+		if err != nil {
+			panic(fmt.Sprintf("invalid value for flag %s: %s", L1ConfirmationsFlag.Name, ctx.GlobalString(L1ConfirmationsFlag.Name)))
+		}
+	} else {
+		cfg.L1Confirmations = rpc.FinalizedBlockNumber
+	}
+	if ctx.GlobalIsSet(L1DeploymentBlockFlag.Name) {
+		cfg.L1DeploymentBlock = ctx.GlobalUint64(L1DeploymentBlockFlag.Name)
 	}
 }
 
@@ -1285,6 +1419,13 @@ func setDataDir(ctx *cli.Context, cfg *node.Config) {
 		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "goerli")
 	case ctx.GlobalBool(SepoliaFlag.Name) && cfg.DataDir == node.DefaultDataDir():
 		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "sepolia")
+	case ctx.GlobalBool(ScrollAlphaFlag.Name) && cfg.DataDir == node.DefaultDataDir():
+		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "scroll-alpha")
+	case ctx.GlobalBool(ScrollSepoliaFlag.Name) && cfg.DataDir == node.DefaultDataDir():
+		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "scroll-sepolia")
+	case ctx.GlobalBool(ScrollFlag.Name) && cfg.DataDir == node.DefaultDataDir():
+		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "scroll")
+
 	}
 }
 
@@ -1305,6 +1446,9 @@ func setGPO(ctx *cli.Context, cfg *gasprice.Config, light bool) {
 	}
 	if ctx.GlobalIsSet(GpoIgnoreGasPriceFlag.Name) {
 		cfg.IgnorePrice = big.NewInt(ctx.GlobalInt64(GpoIgnoreGasPriceFlag.Name))
+	}
+	if ctx.GlobalIsSet(GpoCongestionThresholdFlag.Name) {
+		cfg.CongestedThreshold = ctx.GlobalInt(GpoCongestionThresholdFlag.Name)
 	}
 }
 
@@ -1398,8 +1542,19 @@ func setMiner(ctx *cli.Context, cfg *miner.Config) {
 	if ctx.GlobalIsSet(MinerNoVerifyFlag.Name) {
 		cfg.Noverify = ctx.GlobalBool(MinerNoVerifyFlag.Name)
 	}
+	if ctx.GlobalIsSet(MinerStoreSkippedTxTracesFlag.Name) {
+		cfg.StoreSkippedTxTraces = ctx.GlobalBool(MinerStoreSkippedTxTracesFlag.Name)
+	}
+	if ctx.GlobalIsSet(MinerMaxAccountsNumFlag.Name) {
+		cfg.MaxAccountsNum = ctx.GlobalInt(MinerMaxAccountsNumFlag.Name)
+	}
 	if ctx.GlobalIsSet(LegacyMinerGasTargetFlag.Name) {
 		log.Warn("The generic --miner.gastarget flag is deprecated and will be removed in the future!")
+	}
+
+	cfg.CCCMaxWorkers = runtime.GOMAXPROCS(0)
+	if ctx.GlobalIsSet(CircuitCapacityCheckWorkersFlag.Name) {
+		cfg.CCCMaxWorkers = int(ctx.GlobalUint(CircuitCapacityCheckWorkersFlag.Name))
 	}
 }
 
@@ -1423,6 +1578,30 @@ func setWhitelist(ctx *cli.Context, cfg *ethconfig.Config) {
 			Fatalf("Invalid whitelist hash %s: %v", parts[1], err)
 		}
 		cfg.Whitelist[number] = hash
+	}
+}
+
+func setCircuitCapacityCheck(ctx *cli.Context, cfg *ethconfig.Config) {
+	if ctx.GlobalIsSet(CircuitCapacityCheckEnabledFlag.Name) {
+		cfg.CheckCircuitCapacity = ctx.GlobalBool(CircuitCapacityCheckEnabledFlag.Name)
+		cfg.CCCMaxWorkers = runtime.GOMAXPROCS(0)
+		if ctx.GlobalIsSet(CircuitCapacityCheckWorkersFlag.Name) {
+			cfg.CCCMaxWorkers = int(ctx.GlobalUint(CircuitCapacityCheckWorkersFlag.Name))
+		}
+	}
+}
+
+func setEnableRollupVerify(ctx *cli.Context, cfg *ethconfig.Config) {
+	if ctx.GlobalIsSet(RollupVerifyEnabledFlag.Name) {
+		cfg.EnableRollupVerify = ctx.GlobalBool(RollupVerifyEnabledFlag.Name)
+	}
+}
+
+func setMaxBlockRange(ctx *cli.Context, cfg *ethconfig.Config) {
+	if ctx.GlobalIsSet(MaxBlockRangeFlag.Name) {
+		cfg.MaxBlockRange = ctx.GlobalInt64(MaxBlockRangeFlag.Name)
+	} else {
+		cfg.MaxBlockRange = -1
 	}
 }
 
@@ -1470,10 +1649,10 @@ func CheckExclusive(ctx *cli.Context, args ...interface{}) {
 // SetEthConfig applies eth-related command line flags to the config.
 func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	// Avoid conflicting network flags
-	CheckExclusive(ctx, MainnetFlag, DeveloperFlag, RopstenFlag, RinkebyFlag, GoerliFlag, SepoliaFlag)
+	CheckExclusive(ctx, MainnetFlag, DeveloperFlag, RopstenFlag, RinkebyFlag, GoerliFlag, SepoliaFlag, ScrollAlphaFlag, ScrollSepoliaFlag, ScrollFlag)
 	CheckExclusive(ctx, LightServeFlag, SyncModeFlag, "light")
 	CheckExclusive(ctx, DeveloperFlag, ExternalSignerFlag) // Can't use both ephemeral unlocked and external signer
-	if ctx.GlobalString(GCModeFlag.Name) == "archive" && ctx.GlobalUint64(TxLookupLimitFlag.Name) != 0 {
+	if ctx.GlobalString(GCModeFlag.Name) == GCModeArchive && ctx.GlobalUint64(TxLookupLimitFlag.Name) != 0 {
 		ctx.GlobalSet(TxLookupLimitFlag.Name, "0")
 		log.Warn("Disable transaction unindexing for archive node")
 	}
@@ -1491,6 +1670,13 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	setMiner(ctx, &cfg.Miner)
 	setWhitelist(ctx, cfg)
 	setLes(ctx, cfg)
+	setCircuitCapacityCheck(ctx, cfg)
+	setEnableRollupVerify(ctx, cfg)
+	setMaxBlockRange(ctx, cfg)
+	if ctx.GlobalIsSet(ShadowforkPeersFlag.Name) {
+		cfg.ShadowForkPeerIDs = ctx.GlobalStringSlice(ShadowforkPeersFlag.Name)
+		log.Info("Shadow fork peers", "ids", cfg.ShadowForkPeerIDs)
+	}
 
 	// Cap the cache allowance and tune the garbage collector
 	mem, err := gopsutil.VirtualMemory()
@@ -1526,11 +1712,11 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 		cfg.DatabaseFreezer = ctx.GlobalString(AncientFlag.Name)
 	}
 
-	if gcmode := ctx.GlobalString(GCModeFlag.Name); gcmode != "full" && gcmode != "archive" {
+	if gcmode := ctx.GlobalString(GCModeFlag.Name); gcmode != GCModeFull && gcmode != GCModeArchive {
 		Fatalf("--%s must be either 'full' or 'archive'", GCModeFlag.Name)
 	}
 	if ctx.GlobalIsSet(GCModeFlag.Name) {
-		cfg.NoPruning = ctx.GlobalString(GCModeFlag.Name) == "archive"
+		cfg.NoPruning = ctx.GlobalString(GCModeFlag.Name) == GCModeArchive
 	}
 	if ctx.GlobalIsSet(CacheNoPrefetchFlag.Name) {
 		cfg.NoPrefetch = ctx.GlobalBool(CacheNoPrefetchFlag.Name)
@@ -1632,6 +1818,44 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 		}
 		cfg.Genesis = core.DefaultGoerliGenesisBlock()
 		SetDNSDiscoveryDefaults(cfg, params.GoerliGenesisHash)
+	case ctx.GlobalBool(ScrollAlphaFlag.Name):
+		if !ctx.GlobalIsSet(NetworkIdFlag.Name) {
+			cfg.NetworkId = 534353
+		}
+		cfg.Genesis = core.DefaultScrollAlphaGenesisBlock()
+		// SetDNSDiscoveryDefaults(cfg, params.ScrollAlphaGenesisHash)
+	case ctx.GlobalBool(ScrollSepoliaFlag.Name):
+		if !ctx.GlobalIsSet(NetworkIdFlag.Name) {
+			cfg.NetworkId = 534351
+		}
+		cfg.Genesis = core.DefaultScrollSepoliaGenesisBlock()
+		// forced for sepolia
+		log.Info("Setting flag", "--l1.confirmations", "finalized")
+		stack.Config().L1Confirmations = rpc.FinalizedBlockNumber
+		log.Info("Setting flag", "--l1.sync.startblock", "4038000")
+		stack.Config().L1DeploymentBlock = 4038000
+		// disable pruning
+		if ctx.GlobalString(GCModeFlag.Name) != GCModeArchive {
+			log.Crit("Must use --gcmode=archive")
+		}
+		log.Info("Pruning disabled")
+		cfg.NoPruning = true
+	case ctx.GlobalBool(ScrollFlag.Name):
+		if !ctx.GlobalIsSet(NetworkIdFlag.Name) {
+			cfg.NetworkId = 534352
+		}
+		cfg.Genesis = core.DefaultScrollMainnetGenesisBlock()
+		// forced for mainnet
+		log.Info("Setting flag", "--l1.confirmations", "finalized")
+		stack.Config().L1Confirmations = rpc.FinalizedBlockNumber
+		log.Info("Setting flag", "--l1.sync.startblock", "18306000")
+		stack.Config().L1DeploymentBlock = 18306000
+		// disable pruning
+		if ctx.GlobalString(GCModeFlag.Name) != GCModeArchive {
+			log.Crit("Must use --gcmode=archive")
+		}
+		log.Info("Pruning disabled")
+		cfg.NoPruning = true
 	case ctx.GlobalBool(DeveloperFlag.Name):
 		if !ctx.GlobalIsSet(NetworkIdFlag.Name) {
 			cfg.NetworkId = 1337
@@ -1684,6 +1908,12 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 			SetDNSDiscoveryDefaults(cfg, params.MainnetGenesisHash)
 		}
 	}
+
+	// set db prefix for backward-compatibility
+	if cfg.NetworkId == 534351 {
+		log.Warn("Using legacy db prefix for L1 messages")
+		rawdb.SetL1MessageLegacyPrefix()
+	}
 }
 
 // SetDNSDiscoveryDefaults configures DNS discovery with the given URL if
@@ -1711,10 +1941,27 @@ func RegisterEthService(stack *node.Node, cfg *ethconfig.Config) (ethapi.Backend
 		if err != nil {
 			Fatalf("Failed to register the Ethereum service: %v", err)
 		}
-		stack.RegisterAPIs(tracers.APIs(backend.ApiBackend))
+		scrollTracerWrapper := tracing.NewTracerWrapper()
+		stack.RegisterAPIs(tracers.APIs(backend.ApiBackend, scrollTracerWrapper))
 		return backend.ApiBackend, nil
 	}
-	backend, err := eth.New(stack, cfg)
+
+	// initialize L1 client for sync service
+	// note: we need to do this here to avoid circular dependency
+	l1EndpointUrl := stack.Config().L1Endpoint
+	var l1Client *ethclient.Client
+
+	if l1EndpointUrl != "" {
+		var err error
+		l1Client, err = ethclient.Dial(l1EndpointUrl)
+		if err != nil {
+			Fatalf("Unable to connect to L1 endpoint at %v: %v", l1EndpointUrl, err)
+		}
+
+		log.Info("Initialized L1 client", "endpoint", l1EndpointUrl)
+	}
+
+	backend, err := eth.New(stack, cfg, l1Client)
 	if err != nil {
 		Fatalf("Failed to register the Ethereum service: %v", err)
 	}
@@ -1724,7 +1971,8 @@ func RegisterEthService(stack *node.Node, cfg *ethconfig.Config) (ethapi.Backend
 			Fatalf("Failed to create the LES server: %v", err)
 		}
 	}
-	stack.RegisterAPIs(tracers.APIs(backend.APIBackend))
+	scrollTracerWrapper := tracing.NewTracerWrapper()
+	stack.RegisterAPIs(tracers.APIs(backend.APIBackend, scrollTracerWrapper))
 	return backend.APIBackend, backend
 }
 
@@ -1854,6 +2102,12 @@ func MakeGenesis(ctx *cli.Context) *core.Genesis {
 		genesis = core.DefaultRinkebyGenesisBlock()
 	case ctx.GlobalBool(GoerliFlag.Name):
 		genesis = core.DefaultGoerliGenesisBlock()
+	case ctx.GlobalBool(ScrollAlphaFlag.Name):
+		genesis = core.DefaultScrollAlphaGenesisBlock()
+	case ctx.GlobalBool(ScrollSepoliaFlag.Name):
+		genesis = core.DefaultScrollSepoliaGenesisBlock()
+	case ctx.GlobalBool(ScrollFlag.Name):
+		genesis = core.DefaultScrollMainnetGenesisBlock()
 	case ctx.GlobalBool(DeveloperFlag.Name):
 		Fatalf("Developer chains are ephemeral")
 	}
@@ -1886,14 +2140,14 @@ func MakeChain(ctx *cli.Context, stack *node.Node) (chain *core.BlockChain, chai
 			}, nil, false)
 		}
 	}
-	if gcmode := ctx.GlobalString(GCModeFlag.Name); gcmode != "full" && gcmode != "archive" {
+	if gcmode := ctx.GlobalString(GCModeFlag.Name); gcmode != GCModeFull && gcmode != GCModeArchive {
 		Fatalf("--%s must be either 'full' or 'archive'", GCModeFlag.Name)
 	}
 	cache := &core.CacheConfig{
 		TrieCleanLimit:      ethconfig.Defaults.TrieCleanCache,
 		TrieCleanNoPrefetch: ctx.GlobalBool(CacheNoPrefetchFlag.Name),
 		TrieDirtyLimit:      ethconfig.Defaults.TrieDirtyCache,
-		TrieDirtyDisabled:   ctx.GlobalString(GCModeFlag.Name) == "archive",
+		TrieDirtyDisabled:   ctx.GlobalString(GCModeFlag.Name) == GCModeArchive,
 		TrieTimeLimit:       ethconfig.Defaults.TrieTimeout,
 		SnapshotLimit:       ethconfig.Defaults.SnapshotCache,
 		Preimages:           ctx.GlobalBool(CachePreimagesFlag.Name),

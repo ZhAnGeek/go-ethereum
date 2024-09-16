@@ -23,12 +23,12 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/common/math"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/rpc"
+	"github.com/scroll-tech/go-ethereum/common"
+	"github.com/scroll-tech/go-ethereum/common/hexutil"
+	"github.com/scroll-tech/go-ethereum/common/math"
+	"github.com/scroll-tech/go-ethereum/core/types"
+	"github.com/scroll-tech/go-ethereum/log"
+	"github.com/scroll-tech/go-ethereum/rpc"
 )
 
 // TransactionArgs represents the arguments to construct a new transaction
@@ -45,7 +45,7 @@ type TransactionArgs struct {
 
 	// We accept "data" and "input" for backwards-compatibility reasons.
 	// "input" is the newer name and should be preferred by clients.
-	// Issue detail: https://github.com/ethereum/go-ethereum/issues/15628
+	// Issue detail: https://github.com/scroll-tech/go-ethereum/issues/15628
 	Data  *hexutil.Bytes `json:"data"`
 	Input *hexutil.Bytes `json:"input"`
 
@@ -78,13 +78,13 @@ func (args *TransactionArgs) setDefaults(ctx context.Context, b Backend) error {
 	if args.GasPrice != nil && (args.MaxFeePerGas != nil || args.MaxPriorityFeePerGas != nil) {
 		return errors.New("both gasPrice and (maxFeePerGas or maxPriorityFeePerGas) specified")
 	}
-	// After london, default to 1559 unless gasPrice is set
+	// After curie, default to 1559 unless gasPrice is set
 	head := b.CurrentHeader()
 	// If user specifies both maxPriorityfee and maxFee, then we do not
-	// need to consult the chain for defaults. It's definitely a London tx.
+	// need to consult the chain for defaults. It's definitely a Curie tx.
 	if args.MaxPriorityFeePerGas == nil || args.MaxFeePerGas == nil {
 		// In this clause, user left some fields unspecified.
-		if b.ChainConfig().IsLondon(head.Number) && args.GasPrice == nil {
+		if b.ChainConfig().IsCurie(head.Number) && args.GasPrice == nil {
 			if args.MaxPriorityFeePerGas == nil {
 				tip, err := b.SuggestGasTipCap(ctx)
 				if err != nil {
@@ -93,10 +93,16 @@ func (args *TransactionArgs) setDefaults(ctx context.Context, b Backend) error {
 				args.MaxPriorityFeePerGas = (*hexutil.Big)(tip)
 			}
 			if args.MaxFeePerGas == nil {
-				gasFeeCap := new(big.Int).Add(
-					(*big.Int)(args.MaxPriorityFeePerGas),
-					new(big.Int).Mul(head.BaseFee, big.NewInt(2)),
-				)
+				var gasFeeCap *big.Int
+				if head.BaseFee != nil {
+					gasFeeCap = new(big.Int).Add(
+						(*big.Int)(args.MaxPriorityFeePerGas),
+						new(big.Int).Mul(head.BaseFee, big.NewInt(2)),
+					)
+				} else {
+					gasFeeCap = new(big.Int).Set(
+						(*big.Int)(args.MaxPriorityFeePerGas))
+				}
 				args.MaxFeePerGas = (*hexutil.Big)(gasFeeCap)
 			}
 			if args.MaxFeePerGas.ToInt().Cmp(args.MaxPriorityFeePerGas.ToInt()) < 0 {
@@ -104,18 +110,20 @@ func (args *TransactionArgs) setDefaults(ctx context.Context, b Backend) error {
 			}
 		} else {
 			if args.MaxFeePerGas != nil || args.MaxPriorityFeePerGas != nil {
-				return errors.New("maxFeePerGas or maxPriorityFeePerGas specified but london is not active yet")
+				return errors.New("maxFeePerGas or maxPriorityFeePerGas specified but curie is not active yet")
 			}
 			if args.GasPrice == nil {
 				price, err := b.SuggestGasTipCap(ctx)
 				if err != nil {
 					return err
 				}
-				if b.ChainConfig().IsLondon(head.Number) {
+				if b.ChainConfig().IsCurie(head.Number) {
 					// The legacy tx gas price suggestion should not add 2x base fee
 					// because all fees are consumed, so it would result in a spiral
 					// upwards.
-					price.Add(price, head.BaseFee)
+					if head.BaseFee != nil {
+						price.Add(price, head.BaseFee)
+					}
 				}
 				args.GasPrice = (*hexutil.Big)(price)
 			}

@@ -18,31 +18,36 @@
 package miner
 
 import (
+	"math"
 	"testing"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/consensus/clique"
-	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/core/state"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/core/vm"
-	"github.com/ethereum/go-ethereum/eth/downloader"
-	"github.com/ethereum/go-ethereum/ethdb/memorydb"
-	"github.com/ethereum/go-ethereum/event"
-	"github.com/ethereum/go-ethereum/trie"
+	"github.com/scroll-tech/go-ethereum/common"
+	"github.com/scroll-tech/go-ethereum/consensus/clique"
+	"github.com/scroll-tech/go-ethereum/core"
+	"github.com/scroll-tech/go-ethereum/core/rawdb"
+	"github.com/scroll-tech/go-ethereum/core/state"
+	"github.com/scroll-tech/go-ethereum/core/types"
+	"github.com/scroll-tech/go-ethereum/core/vm"
+	"github.com/scroll-tech/go-ethereum/eth/downloader"
+	"github.com/scroll-tech/go-ethereum/ethdb"
+	"github.com/scroll-tech/go-ethereum/ethdb/memorydb"
+	"github.com/scroll-tech/go-ethereum/event"
+	"github.com/scroll-tech/go-ethereum/rollup/sync_service"
+	"github.com/scroll-tech/go-ethereum/trie"
 )
 
 type mockBackend struct {
-	bc     *core.BlockChain
-	txPool *core.TxPool
+	bc      *core.BlockChain
+	txPool  *core.TxPool
+	chainDb ethdb.Database
 }
 
-func NewMockBackend(bc *core.BlockChain, txPool *core.TxPool) *mockBackend {
+func NewMockBackend(bc *core.BlockChain, txPool *core.TxPool, chainDb ethdb.Database) *mockBackend {
 	return &mockBackend{
-		bc:     bc,
-		txPool: txPool,
+		bc:      bc,
+		txPool:  txPool,
+		chainDb: chainDb,
 	}
 }
 
@@ -52,6 +57,14 @@ func (m *mockBackend) BlockChain() *core.BlockChain {
 
 func (m *mockBackend) TxPool() *core.TxPool {
 	return m.txPool
+}
+
+func (m *mockBackend) SyncService() *sync_service.SyncService {
+	return nil
+}
+
+func (m *mockBackend) ChainDb() ethdb.Database {
+	return m.chainDb
 }
 
 type testBlockChain struct {
@@ -76,6 +89,10 @@ func (bc *testBlockChain) StateAt(common.Hash) (*state.StateDB, error) {
 
 func (bc *testBlockChain) SubscribeChainHeadEvent(ch chan<- core.ChainHeadEvent) event.Subscription {
 	return bc.chainHeadFeed.Subscribe(ch)
+}
+
+func (bc *testBlockChain) Database() ethdb.Database {
+	return nil
 }
 
 func TestMiner(t *testing.T) {
@@ -232,7 +249,9 @@ func waitForMiningState(t *testing.T, m *Miner, mining bool) {
 func createMiner(t *testing.T) (*Miner, *event.TypeMux) {
 	// Create Ethash config
 	config := Config{
-		Etherbase: common.HexToAddress("123456789"),
+		Etherbase:      common.HexToAddress("123456789"),
+		MaxAccountsNum: math.MaxInt,
+		CCCMaxWorkers:  2,
 	}
 	// Create chainConfig
 	memdb := memorydb.New()
@@ -253,7 +272,7 @@ func createMiner(t *testing.T) (*Miner, *event.TypeMux) {
 	blockchain := &testBlockChain{statedb, 10000000, new(event.Feed)}
 
 	pool := core.NewTxPool(testTxPoolConfig, chainConfig, blockchain)
-	backend := NewMockBackend(bc, pool)
+	backend := NewMockBackend(bc, pool, chainDB)
 	// Create event Mux
 	mux := new(event.TypeMux)
 	// Create Miner

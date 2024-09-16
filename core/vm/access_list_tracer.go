@@ -20,8 +20,8 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/scroll-tech/go-ethereum/common"
+	"github.com/scroll-tech/go-ethereum/core/types"
 )
 
 // accessList is an accumulator for the set of accounts and storage slots an EVM
@@ -159,6 +159,10 @@ func (a *AccessListTracer) CaptureState(pc uint64, op OpCode, gas, cost uint64, 
 			a.list.addAddress(addr)
 		}
 	}
+}
+
+// CaptureStateAfter for special needs, tracks SSTORE ops and records the storage change.
+func (*AccessListTracer) CaptureStateAfter(pc uint64, op OpCode, gas, cost uint64, scope *ScopeContext, rData []byte, depth int, err error) {
 }
 
 func (*AccessListTracer) CaptureFault(pc uint64, op OpCode, gas, cost uint64, scope *ScopeContext, depth int, err error) {

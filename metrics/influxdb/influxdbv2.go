@@ -13,10 +13,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/metrics"
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
 	"github.com/influxdata/influxdb-client-go/v2/api"
+
+	"github.com/scroll-tech/go-ethereum/log"
+	"github.com/scroll-tech/go-ethereum/metrics"
 )
 
 type v2Reporter struct {
@@ -189,6 +190,7 @@ func (r *v2Reporter) send() {
 				"m5":       ms.Rate5(),
 				"m15":      ms.Rate15(),
 				"meanrate": ms.RateMean(),
+				"total":    int64(ms.Total()),
 			}
 
 			pt := influxdb2.NewPoint(measurement, r.tags, fields, now)

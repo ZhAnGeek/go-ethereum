@@ -22,22 +22,22 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/accounts"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/consensus"
-	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/bloombits"
-	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/core/state"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/core/vm"
-	"github.com/ethereum/go-ethereum/eth/gasprice"
-	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/event"
-	"github.com/ethereum/go-ethereum/miner"
-	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/rpc"
+	"github.com/scroll-tech/go-ethereum"
+	"github.com/scroll-tech/go-ethereum/accounts"
+	"github.com/scroll-tech/go-ethereum/common"
+	"github.com/scroll-tech/go-ethereum/consensus"
+	"github.com/scroll-tech/go-ethereum/core"
+	"github.com/scroll-tech/go-ethereum/core/bloombits"
+	"github.com/scroll-tech/go-ethereum/core/rawdb"
+	"github.com/scroll-tech/go-ethereum/core/state"
+	"github.com/scroll-tech/go-ethereum/core/types"
+	"github.com/scroll-tech/go-ethereum/core/vm"
+	"github.com/scroll-tech/go-ethereum/eth/gasprice"
+	"github.com/scroll-tech/go-ethereum/ethdb"
+	"github.com/scroll-tech/go-ethereum/event"
+	"github.com/scroll-tech/go-ethereum/miner"
+	"github.com/scroll-tech/go-ethereum/params"
+	"github.com/scroll-tech/go-ethereum/rpc"
 )
 
 // EthAPIBackend implements ethapi.Backend for full nodes
@@ -51,6 +51,10 @@ type EthAPIBackend struct {
 // ChainConfig returns the active chain configuration.
 func (b *EthAPIBackend) ChainConfig() *params.ChainConfig {
 	return b.eth.blockchain.Config()
+}
+
+func (b *EthAPIBackend) CacheConfig() *core.CacheConfig {
+	return b.eth.blockchain.CacheConfig()
 }
 
 func (b *EthAPIBackend) CurrentBlock() *types.Block {
@@ -71,6 +75,17 @@ func (b *EthAPIBackend) HeaderByNumber(ctx context.Context, number rpc.BlockNumb
 	// Otherwise resolve and return the block
 	if number == rpc.LatestBlockNumber {
 		return b.eth.blockchain.CurrentBlock().Header(), nil
+	}
+	if number == rpc.FinalizedBlockNumber {
+		if !b.eth.config.EnableRollupVerify {
+			return nil, errors.New("sync L1 finalized batch feature not enabled, cannot query L2 finalized block height")
+		}
+		finalizedBlockHeightPtr := rawdb.ReadFinalizedL2BlockNumber(b.eth.ChainDb())
+		if finalizedBlockHeightPtr == nil {
+			return nil, errors.New("L2 finalized block height not found in database")
+		}
+		number = rpc.BlockNumber(*finalizedBlockHeightPtr)
+		return b.eth.blockchain.GetHeaderByNumber(uint64(number)), nil
 	}
 	return b.eth.blockchain.GetHeaderByNumber(uint64(number)), nil
 }
@@ -105,6 +120,17 @@ func (b *EthAPIBackend) BlockByNumber(ctx context.Context, number rpc.BlockNumbe
 	// Otherwise resolve and return the block
 	if number == rpc.LatestBlockNumber {
 		return b.eth.blockchain.CurrentBlock(), nil
+	}
+	if number == rpc.FinalizedBlockNumber {
+		if !b.eth.config.EnableRollupVerify {
+			return nil, errors.New("sync L1 finalized batch feature not enabled, cannot query L2 finalized block height")
+		}
+		finalizedBlockHeightPtr := rawdb.ReadFinalizedL2BlockNumber(b.eth.ChainDb())
+		if finalizedBlockHeightPtr == nil {
+			return nil, errors.New("L2 finalized block height not found in database")
+		}
+		number = rpc.BlockNumber(*finalizedBlockHeightPtr)
+		return b.eth.blockchain.GetBlockByNumber(uint64(number)), nil
 	}
 	return b.eth.blockchain.GetBlockByNumber(uint64(number)), nil
 }
@@ -207,7 +233,7 @@ func (b *EthAPIBackend) GetEVM(ctx context.Context, msg core.Message, state *sta
 		vmConfig = b.eth.blockchain.GetVMConfig()
 	}
 	txContext := core.NewEVMTxContext(msg)
-	context := core.NewEVMBlockContext(header, b.eth.BlockChain(), nil)
+	context := core.NewEVMBlockContext(header, b.eth.BlockChain(), b.eth.blockchain.Config(), nil)
 	return vm.NewEVM(context, txContext, state, b.eth.blockchain.Config(), *vmConfig), vmError, nil
 }
 
@@ -236,7 +262,12 @@ func (b *EthAPIBackend) SubscribeLogsEvent(ch chan<- []*types.Log) event.Subscri
 }
 
 func (b *EthAPIBackend) SendTx(ctx context.Context, signedTx *types.Transaction) error {
+	// will `VerifyFee` & `validateTx` in txPool.AddLocal
 	return b.eth.txPool.AddLocal(signedTx)
+}
+
+func (b *EthAPIBackend) RemoveTx(txHash common.Hash) {
+	b.eth.txPool.RemoveTx(txHash, true)
 }
 
 func (b *EthAPIBackend) GetPoolTransactions() (types.Transactions, error) {
@@ -263,6 +294,10 @@ func (b *EthAPIBackend) GetPoolNonce(ctx context.Context, addr common.Address) (
 
 func (b *EthAPIBackend) Stats() (pending int, queued int) {
 	return b.eth.txPool.Stats()
+}
+
+func (b *EthAPIBackend) StatsWithMinBaseFee(minBaseFee *big.Int) (pending int, queued int) {
+	return b.eth.txPool.StatsWithMinBaseFee(minBaseFee)
 }
 
 func (b *EthAPIBackend) TxPoolContent() (map[common.Address]types.Transactions, map[common.Address]types.Transactions) {
@@ -358,4 +393,8 @@ func (b *EthAPIBackend) StateAtBlock(ctx context.Context, block *types.Block, re
 
 func (b *EthAPIBackend) StateAtTransaction(ctx context.Context, block *types.Block, txIndex int, reexec uint64) (core.Message, vm.BlockContext, *state.StateDB, error) {
 	return b.eth.stateAtTransaction(block, txIndex, reexec)
+}
+
+func (b *EthAPIBackend) StateAt(root common.Hash) (*state.StateDB, error) {
+	return b.eth.BlockChain().StateAt(root)
 }

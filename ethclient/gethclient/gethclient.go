@@ -23,12 +23,12 @@ import (
 	"runtime"
 	"runtime/debug"
 
-	"github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/p2p"
-	"github.com/ethereum/go-ethereum/rpc"
+	"github.com/scroll-tech/go-ethereum"
+	"github.com/scroll-tech/go-ethereum/common"
+	"github.com/scroll-tech/go-ethereum/common/hexutil"
+	"github.com/scroll-tech/go-ethereum/core/types"
+	"github.com/scroll-tech/go-ethereum/p2p"
+	"github.com/scroll-tech/go-ethereum/rpc"
 )
 
 // Client is a wrapper around rpc.Client that implements geth-specific functionality.
@@ -60,13 +60,15 @@ func (ec *Client) CreateAccessList(ctx context.Context, msg ethereum.CallMsg) (*
 
 // AccountResult is the result of a GetProof operation.
 type AccountResult struct {
-	Address      common.Address  `json:"address"`
-	AccountProof []string        `json:"accountProof"`
-	Balance      *big.Int        `json:"balance"`
-	CodeHash     common.Hash     `json:"codeHash"`
-	Nonce        uint64          `json:"nonce"`
-	StorageHash  common.Hash     `json:"storageHash"`
-	StorageProof []StorageResult `json:"storageProof"`
+	Address          common.Address  `json:"address"`
+	AccountProof     []string        `json:"accountProof"`
+	Balance          *big.Int        `json:"balance"`
+	KeccakCodeHash   common.Hash     `json:"keccakCodeHash"`
+	PoseidonCodeHash common.Hash     `json:"poseidonCodeHash"`
+	CodeSize         common.Hash     `json:"codeSize"`
+	Nonce            uint64          `json:"nonce"`
+	StorageHash      common.Hash     `json:"storageHash"`
+	StorageProof     []StorageResult `json:"storageProof"`
 }
 
 // StorageResult provides a proof for a key-value pair.
@@ -87,13 +89,15 @@ func (ec *Client) GetProof(ctx context.Context, account common.Address, keys []s
 	}
 
 	type accountResult struct {
-		Address      common.Address  `json:"address"`
-		AccountProof []string        `json:"accountProof"`
-		Balance      *hexutil.Big    `json:"balance"`
-		CodeHash     common.Hash     `json:"codeHash"`
-		Nonce        hexutil.Uint64  `json:"nonce"`
-		StorageHash  common.Hash     `json:"storageHash"`
-		StorageProof []storageResult `json:"storageProof"`
+		Address          common.Address  `json:"address"`
+		AccountProof     []string        `json:"accountProof"`
+		Balance          *hexutil.Big    `json:"balance"`
+		KeccakCodeHash   common.Hash     `json:"keccakodeHash"`
+		PoseidonCodeHash common.Hash     `json:"poseidonCodeHash"`
+		CodeSize         common.Hash     `json:"codeSize"`
+		Nonce            hexutil.Uint64  `json:"nonce"`
+		StorageHash      common.Hash     `json:"storageHash"`
+		StorageProof     []storageResult `json:"storageProof"`
 	}
 
 	var res accountResult
@@ -108,12 +112,14 @@ func (ec *Client) GetProof(ctx context.Context, account common.Address, keys []s
 		})
 	}
 	result := AccountResult{
-		Address:      res.Address,
-		AccountProof: res.AccountProof,
-		Balance:      res.Balance.ToInt(),
-		Nonce:        uint64(res.Nonce),
-		CodeHash:     res.CodeHash,
-		StorageHash:  res.StorageHash,
+		Address:          res.Address,
+		AccountProof:     res.AccountProof,
+		Balance:          res.Balance.ToInt(),
+		Nonce:            uint64(res.Nonce),
+		KeccakCodeHash:   res.KeccakCodeHash,
+		PoseidonCodeHash: res.PoseidonCodeHash,
+		CodeSize:         res.CodeSize,
+		StorageHash:      res.StorageHash,
 	}
 	return &result, err
 }
@@ -206,6 +212,21 @@ func toCallArg(msg ethereum.CallMsg) interface{} {
 	}
 	if msg.GasPrice != nil {
 		arg["gasPrice"] = (*hexutil.Big)(msg.GasPrice)
+	}
+	if msg.GasFeeCap != nil {
+		arg["maxFeePerGas"] = (*hexutil.Big)(msg.GasFeeCap)
+	}
+	if msg.GasTipCap != nil {
+		arg["maxPriorityFeePerGas"] = (*hexutil.Big)(msg.GasTipCap)
+	}
+	if msg.AccessList != nil {
+		arg["accessList"] = msg.AccessList
+	}
+	if msg.BlobGasFeeCap != nil {
+		arg["maxFeePerBlobGas"] = (*hexutil.Big)(msg.BlobGasFeeCap)
+	}
+	if msg.BlobHashes != nil {
+		arg["blobVersionedHashes"] = msg.BlobHashes
 	}
 	return arg
 }

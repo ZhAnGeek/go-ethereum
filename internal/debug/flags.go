@@ -24,13 +24,14 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/metrics"
-	"github.com/ethereum/go-ethereum/metrics/exp"
 	"github.com/fjl/memsize/memsizeui"
 	"github.com/mattn/go-colorable"
 	"github.com/mattn/go-isatty"
 	"gopkg.in/urfave/cli.v1"
+
+	"github.com/scroll-tech/go-ethereum/log"
+	"github.com/scroll-tech/go-ethereum/metrics"
+	"github.com/scroll-tech/go-ethereum/metrics/exp"
 )
 
 var Memsize memsizeui.Handler
@@ -114,6 +115,18 @@ func init() {
 	glogger = log.NewGlogHandler(log.StreamHandler(os.Stderr, log.TerminalFormat(false)))
 	glogger.Verbosity(log.LvlInfo)
 	log.Root().SetHandler(glogger)
+}
+
+// TraceConfig export options about trace
+type TraceConfig struct {
+	TracePath string
+}
+
+func ConfigTrace(ctx *cli.Context) *TraceConfig {
+	cfg := new(TraceConfig)
+	cfg.TracePath = ctx.GlobalString(traceFlag.Name)
+
+	return cfg
 }
 
 // Setup initializes profiling and logging based on the CLI flags.
